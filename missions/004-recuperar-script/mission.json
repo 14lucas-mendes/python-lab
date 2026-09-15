@@ -1,0 +1,10 @@
+{
+  "id": "004",
+  "slug": "recuperar-script",
+  "title": "Recuperar script defeituoso",
+  "summary": "Investigar código existente que falha em casos específicos.",
+  "skills": ["debugging", "pytest", "edge_cases", "ai_code_review"],
+  "prerequisites": ["003"],
+  "tests": "tests",
+  "solution": "starter.py"
+}

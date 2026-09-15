@@ -1,0 +1,10 @@
+{
+  "id": "005",
+  "slug": "relatorio-operacional",
+  "title": "Gerar relatório operacional",
+  "summary": "Integrar as capacidades anteriores em um programa modular.",
+  "skills": ["decomposition", "csv", "json", "exceptions", "pytest", "modules"],
+  "prerequisites": ["001", "002", "003", "004"],
+  "tests": "tests",
+  "solution": "starter"
+}

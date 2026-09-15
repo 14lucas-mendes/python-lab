@@ -1,0 +1,7 @@
+[
+  "Quais casos os testes descrevem que o script atual não cobre?",
+  "Código gerado por IA costuma 'funcionar no caminho feliz' e falhar em lista vazia, mutação e arredondamento precoce.",
+  "Rode um teste de cada vez. Anote o traceback e corrija só aquele comportamento antes de passar ao próximo.",
+  "Não ordene a lista original; se eventos for vazio retorne {}; rejeite duração < 0; some primeiro e arredonde só o percentual final.",
+  {"type": "reference", "path": "reference_solution.py"}
+]

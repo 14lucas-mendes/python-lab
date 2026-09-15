@@ -1,0 +1,7 @@
+[
+  "Quais responsabilidades cabem à leitura, à montagem do relatório e à gravação do arquivo?",
+  "Um módulo pequeno por responsabilidade evita misturar I/O com regra de negócio.",
+  "load_inputs só lê e valida entradas; build_report só combina totais e status; write_report só grava JSON UTF-8.",
+  "io.py: CSV com try/except por linha + json.load; report.py: dicionário de totais e status desconhecido para IDs fora do cadastro; main.py só orquestra.",
+  {"type": "reference", "path": "reference_solution"}
+]
