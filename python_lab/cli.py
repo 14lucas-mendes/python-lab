@@ -6,7 +6,7 @@ from rich.table import Table
 
 from python_lab.app import ApplicationError, PythonLabApp
 from python_lab.catalog import CatalogError, load_goal, load_missions, load_skills
-from python_lab.learning import HintError, LearningError
+from python_lab.learning import CompletionError, HintError, LearningError
 from python_lab.progress import ProgressError, ProgressRepository
 
 
@@ -145,7 +145,20 @@ class PythonLabCLI:
     def explain(self, argument: str = "") -> bool:
         text = argument.strip() or self.console.input("Explicação final: ").strip()
         self.app.save_explanation(text)
-        self.console.print("Explicação registrada.")
+        try:
+            evidence = self.app.complete_current_mission()
+        except CompletionError as exc:
+            self.console.print("Explicação registrada.")
+            self.console.print(f"[yellow]{exc}[/yellow]")
+            return True
+        self.console.print("[green]Missão concluída![/green]")
+        for item in evidence:
+            self.console.print(f"- {item['skill']}: {item['result']}")
+        recommended = self.app.recommended()
+        if recommended is not None:
+            self.console.print(f"Próxima missão: {recommended.id} — {recommended.title}")
+        else:
+            self.console.print("Todas as missões concluídas.")
         return True
 
     def status(self, _argument: str = "") -> bool:

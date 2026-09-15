@@ -27,7 +27,7 @@ Se `py -3.11` não estiver disponível, use o interpretador 3.11 com o qual o am
 4. Edite `starter.py` (ou o pacote em `starter/` na missão 005) no VS Code.
 5. `/test` executa o pytest da missão.
 6. `/hint` libera pistas progressivas se precisar.
-7. `/explain` registra a explicação final quando os testes passam.
+7. `/explain` registra a explicação final quando os testes passam. Se plano, testes e explicação estiverem completos, a missão é concluída na hora, com evidências e a próxima missão indicada; se faltar algo, a CLI diz o que está pendente.
 8. A missão só conclui com plano, testes e explicação.
 
 ## Comandos
