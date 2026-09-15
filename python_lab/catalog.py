@@ -1,0 +1,109 @@
+import json
+from pathlib import Path
+from typing import Any
+
+from python_lab.models import Goal, Mission, Skill
+
+
+class CatalogError(Exception):
+    pass
+
+
+def _read_json(path: Path) -> Any:
+    try:
+        return json.loads(path.read_text(encoding="utf-8"))
+    except FileNotFoundError as exc:
+        raise CatalogError(f"Arquivo não encontrado: {path}") from exc
+    except json.JSONDecodeError as exc:
+        raise CatalogError(f"JSON inválido em {path}: {exc.msg}") from exc
+
+
+def _require(payload: dict[str, Any], field: str, path: Path) -> Any:
+    if field not in payload:
+        raise CatalogError(f"Campo obrigatório ausente em {path}: {field}")
+    return payload[field]
+
+
+def _as_tuple(value: Any, field: str, path: Path) -> tuple[str, ...]:
+    if not isinstance(value, list) or any(not isinstance(item, str) for item in value):
+        raise CatalogError(f"Campo {field} deve ser uma lista de strings em {path}")
+    return tuple(value)
+
+
+def load_goal(path: Path) -> Goal:
+    payload = _read_json(path)
+    if not isinstance(payload, dict):
+        raise CatalogError(f"Goal deve ser um objeto JSON em {path}")
+    criteria = _require(payload, "success_criteria", path)
+    return Goal(
+        title=_require(payload, "title", path),
+        statement=_require(payload, "statement", path),
+        success_criteria=_as_tuple(criteria, "success_criteria", path),
+    )
+
+
+def load_skills(path: Path) -> dict[str, Skill]:
+    payload = _read_json(path)
+    if not isinstance(payload, list):
+        raise CatalogError(f"Skills devem ser uma lista JSON em {path}")
+    skills: dict[str, Skill] = {}
+    for item in payload:
+        if not isinstance(item, dict):
+            raise CatalogError(f"Cada skill deve ser um objeto JSON em {path}")
+        skill_id = _require(item, "id", path)
+        skills[skill_id] = Skill(
+            id=skill_id,
+            name=_require(item, "name", path),
+            category=_require(item, "category", path),
+            future=bool(item.get("future", False)),
+        )
+    return skills
+
+
+def _hint_text(item: Any, path: Path) -> str:
+    if isinstance(item, str):
+        return item
+    if isinstance(item, dict):
+        if item.get("type") == "reference":
+            reference = item.get("path", "reference_solution.py")
+            return f"Solução de referência: {reference}"
+        text = item.get("text")
+        if isinstance(text, str):
+            return text
+    raise CatalogError(f"Pista inválida em {path}")
+
+
+def _load_hints(mission_dir: Path) -> tuple[str, ...]:
+    hints_path = mission_dir / "hints.json"
+    payload = _read_json(hints_path)
+    if not isinstance(payload, list):
+        raise CatalogError(f"hints.json deve ser uma lista em {hints_path}")
+    return tuple(_hint_text(item, hints_path) for item in payload)
+
+
+def _load_mission(mission_path: Path) -> Mission:
+    payload = _read_json(mission_path)
+    if not isinstance(payload, dict):
+        raise CatalogError(f"Missão deve ser um objeto JSON em {mission_path}")
+    mission_dir = mission_path.parent
+    folder_slug = mission_dir.name.split("-", 1)[1] if "-" in mission_dir.name else mission_dir.name
+    tests = _require(payload, "tests", mission_path)
+    solution = _require(payload, "solution", mission_path)
+    return Mission(
+        id=_require(payload, "id", mission_path),
+        slug=payload.get("slug", folder_slug),
+        title=_require(payload, "title", mission_path),
+        summary=_require(payload, "summary", mission_path),
+        skills=_as_tuple(_require(payload, "skills", mission_path), "skills", mission_path),
+        prerequisites=_as_tuple(payload.get("prerequisites", []), "prerequisites", mission_path),
+        test_path=(mission_dir / tests).resolve(),
+        solution_path=(mission_dir / solution).resolve(),
+        hints=_load_hints(mission_dir),
+    )
+
+
+def load_missions(root: Path) -> list[Mission]:
+    mission_files = sorted(root.glob("*/mission.json"))
+    missions = [_load_mission(path) for path in mission_files]
+    missions.sort(key=lambda mission: mission.id)
+    return missions

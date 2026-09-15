@@ -1,0 +1,23 @@
+[
+  {"id": "problem_understanding", "name": "Compreensão do problema", "category": "pensamento"},
+  {"id": "inputs_outputs", "name": "Identificação de entradas e saídas", "category": "pensamento"},
+  {"id": "decomposition", "name": "Decomposição", "category": "pensamento"},
+  {"id": "edge_cases", "name": "Identificação de casos extremos", "category": "pensamento"},
+  {"id": "technical_explanation", "name": "Explicação técnica", "category": "pensamento"},
+  {"id": "functions", "name": "Funções", "category": "python"},
+  {"id": "collections", "name": "Listas e dicionários", "category": "python"},
+  {"id": "strings_validation", "name": "Strings e validação de dados", "category": "python"},
+  {"id": "files", "name": "Arquivos", "category": "python"},
+  {"id": "csv", "name": "CSV", "category": "python"},
+  {"id": "json", "name": "JSON", "category": "python"},
+  {"id": "exceptions", "name": "Exceções", "category": "python"},
+  {"id": "debugging", "name": "Debugging", "category": "engenharia"},
+  {"id": "pytest", "name": "Testes com pytest", "category": "engenharia"},
+  {"id": "modules", "name": "Organização básica em módulos", "category": "engenharia"},
+  {"id": "ai_code_review", "name": "Leitura crítica de código gerado por IA", "category": "engenharia"},
+  {"id": "sql", "name": "SQL", "category": "futuro", "future": true},
+  {"id": "rest_apis", "name": "APIs REST", "category": "futuro", "future": true},
+  {"id": "git", "name": "Git aplicado", "category": "futuro", "future": true},
+  {"id": "selenium", "name": "Selenium", "category": "futuro", "future": true},
+  {"id": "ai_systems", "name": "Sistemas com IA", "category": "futuro", "future": true}
+]
