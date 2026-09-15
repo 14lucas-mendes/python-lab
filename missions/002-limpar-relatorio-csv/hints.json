@@ -1,0 +1,7 @@
+[
+  "O que torna uma linha de CSV confiável o bastante para entrar no resumo?",
+  "csv.DictReader entrega cada linha como dicionário. Trate conversões que podem falhar sem interromper o arquivo inteiro.",
+  "Para cada linha, tente ler equipamento e minutos; se faltar campo ou a duração não for número, conte como inválida e siga.",
+  "Abra o arquivo, DictReader, tente int(minutos); except ValueError: invalidos += 1; continue; some totais só nas linhas válidas.",
+  {"type": "reference", "path": "reference_solution.py"}
+]

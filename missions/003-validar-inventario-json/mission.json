@@ -1,0 +1,10 @@
+{
+  "id": "003",
+  "slug": "validar-inventario-json",
+  "title": "Validar inventário JSON",
+  "summary": "Verificar campos obrigatórios e separar equipamentos válidos dos inconsistentes.",
+  "skills": ["json", "collections", "strings_validation", "edge_cases"],
+  "prerequisites": ["002"],
+  "tests": "tests",
+  "solution": "starter.py"
+}

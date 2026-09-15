@@ -1,0 +1,7 @@
+[
+  "Quais campos precisam existir em todo equipamento para o inventário ser confiável?",
+  "json.load lê o arquivo inteiro. JSON malformado não é um registro inválido: é um arquivo inválido.",
+  "Percorra a lista com enumerate, acumule erros de campos ausentes e use um set para detectar IDs já vistos.",
+  "try json.load except JSONDecodeError -> ValueError('Inventário JSON inválido'); para cada item, errors=[]; se id in seen: duplicado; senão seen.add.",
+  {"type": "reference", "path": "reference_solution.py"}
+]

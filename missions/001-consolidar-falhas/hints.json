@@ -1,0 +1,7 @@
+[
+  "Quais informações cada registro precisa ter para você consolidar as falhas?",
+  "Você precisa agrupar valores repetidos. Qual estrutura de dados guarda um total por chave?",
+  "Percorra a lista uma vez, some os minutos no dicionário e depois descubra a chave com o maior total.",
+  "totais = {}; para cada registro, rejeite minutos < 0; some; mais_critico = min das chaves com o maior total; lista vazia retorna mais_critico None.",
+  {"type": "reference", "path": "reference_solution.py"}
+]

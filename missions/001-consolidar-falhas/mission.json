@@ -1,0 +1,10 @@
+{
+  "id": "001",
+  "slug": "consolidar-falhas",
+  "title": "Consolidar falhas",
+  "summary": "Somar indisponibilidade por equipamento e identificar o mais crítico.",
+  "skills": ["functions", "collections", "decomposition", "problem_understanding"],
+  "prerequisites": [],
+  "tests": "tests",
+  "solution": "starter.py"
+}

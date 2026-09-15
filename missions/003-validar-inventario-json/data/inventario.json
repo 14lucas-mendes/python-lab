@@ -1,0 +1,5 @@
+[
+  {"id": "EQ-1", "tipo": "servidor", "status": "ativo"},
+  {"id": "EQ-2", "tipo": "switch", "status": "inativo"},
+  {"id": "EQ-3", "tipo": "roteador"}
+]

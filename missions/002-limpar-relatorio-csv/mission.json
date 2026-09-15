@@ -1,0 +1,10 @@
+{
+  "id": "002",
+  "slug": "limpar-relatorio-csv",
+  "title": "Limpar relatório CSV",
+  "summary": "Ler registros, rejeitar linhas inválidas e produzir um resumo confiável.",
+  "skills": ["files", "csv", "strings_validation", "exceptions"],
+  "prerequisites": ["001"],
+  "tests": "tests",
+  "solution": "starter.py"
+}
