@@ -106,10 +106,14 @@ Comandos:
 | `/hint` | Liberar a próxima pista |
 | `/explain` | Registrar a explicação final |
 | `/status` | Exibir estado da sessão |
+| `/history` | Exibir histórico de tentativas da missão atual |
+| `/evidence` | Exibir evidências de competências |
 | `/help` | Listar comandos disponíveis |
 | `/exit` | Salvar e encerrar com segurança |
 
 Rich será usado para painéis, tabelas, cores e mensagens. Cada comando terá um manipulador isolado, separando interface, regras de domínio e persistência.
+
+A v0.1 é distribuída e suportada a partir do checkout do repositório, com instalação editável. O wheel não faz parte do contrato desta versão enquanto `data/` e `missions/` permanecerem recursos externos ao pacote Python.
 
 ## 6. Modelo de Skills
 

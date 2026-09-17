@@ -1,4 +1,7 @@
+import argparse
+import sys
 from pathlib import Path
+from typing import Sequence
 
 from rich.console import Console
 from rich.panel import Panel
@@ -14,12 +17,14 @@ COMMANDS = (
     ("/goal", "Exibir objetivo e critérios de sucesso"),
     ("/skills", "Exibir mapa de competências e evidências"),
     ("/missions", "Listar missões e estados"),
-    ("/start <id>", "Iniciar uma missão desbloqueada"),
+    ("/start <id>", "Iniciar ou repetir uma missão desbloqueada"),
     ("/plan", "Registrar ou revisar o planejamento"),
     ("/test", "Executar os testes da missão atual"),
     ("/hint", "Liberar a próxima pista"),
     ("/explain", "Registrar a explicação final"),
     ("/status", "Exibir estado da sessão"),
+    ("/history", "Exibir histórico de tentativas da missão atual"),
+    ("/evidence", "Exibir evidências de competências"),
     ("/help", "Listar comandos disponíveis"),
     ("/exit", "Salvar e encerrar com segurança"),
 )
@@ -28,6 +33,19 @@ SKILL_LABELS = {
     "practicing": "Em prática",
     "demonstrated": "Demonstrada",
     "consolidated": "Consolidada",
+}
+
+MISSION_STATUS_LABELS = {
+    "available": "disponível",
+    "started": "em andamento",
+    "completed": "concluída",
+    "blocked": "bloqueada",
+}
+
+EVIDENCE_RESULT_LABELS = {
+    "practicing": "em prática",
+    "demonstrated": "demonstrada",
+    "consolidated": "consolidada",
 }
 
 
@@ -45,6 +63,8 @@ class PythonLabCLI:
             "/hint": self.hint,
             "/explain": self.explain,
             "/status": self.status,
+            "/history": self.history,
+            "/evidence": self.evidence,
             "/help": self.help,
             "/exit": self.exit,
         }
@@ -63,7 +83,7 @@ class PythonLabCLI:
         try:
             return handler(argument)
         except (ApplicationError, LearningError, ProgressError) as exc:
-            self.console.print(f"[red]{exc}[/red]")
+            self.console.print(str(exc), style="red", markup=False)
             return True
 
     def show_goal(self, _argument: str = "") -> bool:
@@ -95,7 +115,15 @@ class PythonLabCLI:
         table.add_column("Estado")
         for mission in self.app.missions:
             progress = self.app.progress.missions.get(mission.id)
-            status = progress.status if progress else "available"
+            if progress is not None and progress.status in {"started", "completed"}:
+                status = MISSION_STATUS_LABELS.get(progress.status, progress.status)
+            else:
+                unlocked = all(
+                    self.app.progress.missions.get(prerequisite) is not None
+                    and self.app.progress.missions[prerequisite].status == "completed"
+                    for prerequisite in mission.prerequisites
+                )
+                status = "disponível" if unlocked else "bloqueada"
             table.add_row(mission.id, mission.title, status)
         self.console.print(table)
         return True
@@ -107,6 +135,10 @@ class PythonLabCLI:
             return True
         mission = self.app.start(mission_id)
         self.console.print(f"Missão {mission.id} iniciada: {mission.title}")
+        self.console.print(f"Resumo: {mission.summary}")
+        prerequisites = ", ".join(mission.prerequisites) or "nenhum"
+        self.console.print(f"Pré-requisitos: {prerequisites}")
+        self.console.print(f"Leia o enunciado em: {mission.test_path.parent / 'README.md'}")
         self.console.print(f"Edite a solução em: {mission.solution_path}")
         return True
 
@@ -127,8 +159,14 @@ class PythonLabCLI:
         style = "green" if result.passed else "red"
         status = "passaram" if result.passed else "falharam"
         self.console.print(f"[{style}]Testes {status} (código {result.return_code})[/{style}]")
+        if result.summary:
+            self.console.print(f"Resumo: {result.summary}", markup=False)
+        if result.diagnostics:
+            self.console.print("Diagnóstico:", markup=False)
+            for item in result.diagnostics[:5]:
+                self.console.print(f"- {item}", markup=False)
         if result.output.strip():
-            self.console.print(result.output)
+            self.console.print(result.output, markup=False)
         return True
 
     def hint(self, argument: str = "") -> bool:
@@ -136,8 +174,11 @@ class PythonLabCLI:
         try:
             text = self.app.next_hint(confirm_reference=confirm)
         except HintError as exc:
-            self.console.print(f"[yellow]{exc}[/yellow]")
-            self.console.print("Use /hint confirm para liberar a solução de referência.")
+            self.console.print(str(exc), style="yellow", markup=False)
+            self.console.print(
+                "Use /hint confirm para liberar a solução de referência.",
+                markup=False,
+            )
             return True
         self.console.print(Panel(text, title="Pista"))
         return True
@@ -149,7 +190,7 @@ class PythonLabCLI:
             evidence = self.app.complete_current_mission()
         except CompletionError as exc:
             self.console.print("Explicação registrada.")
-            self.console.print(f"[yellow]{exc}[/yellow]")
+            self.console.print(str(exc), style="yellow", markup=False)
             return True
         self.console.print("[green]Missão concluída![/green]")
         for item in evidence:
@@ -171,10 +212,14 @@ class PythonLabCLI:
         ]
         try:
             progress = self.app.current_progress()
+            if progress.tests_passed:
+                tests_status = "ok" if self.app.tests_are_current() else "desatualizados"
+            else:
+                tests_status = "pendentes"
             lines.extend(
                 [
                     f"Tentativas: {progress.attempts}",
-                    f"Testes: {'ok' if progress.tests_passed else 'pendentes'}",
+                    f"Testes: {tests_status}",
                     f"Pistas: {progress.hints_revealed}",
                     f"Plano: {'registrado' if progress.plan else 'pendente'}",
                     f"Explicação: {'registrada' if progress.explanation else 'pendente'}",
@@ -183,6 +228,31 @@ class PythonLabCLI:
         except ApplicationError:
             pass
         self.console.print(Panel("\n".join(lines), title="Sessão"))
+        return True
+
+    def history(self, _argument: str = "") -> bool:
+        progress = self.app.current_progress()
+        if not progress.attempt_history:
+            self.console.print("Nenhuma tentativa registrada para a missão atual.")
+            return True
+        self.console.print("Histórico de tentativas:")
+        for index, attempt in enumerate(progress.attempt_history, start=1):
+            state = "passou" if attempt.get("passed") else "falhou"
+            summary = attempt.get("summary") or "sem resumo"
+            self.console.print(f"{index}. {state} — {summary}")
+        return True
+
+    def evidence(self, _argument: str = "") -> bool:
+        if not self.app.progress.evidence:
+            self.console.print("Nenhuma evidência registrada.")
+            return True
+        self.console.print("Evidências:")
+        for item in self.app.progress.evidence:
+            self.console.print(
+                f"- {item.get('mission', '?')} / {item.get('skill', '?')}: "
+                f"{EVIDENCE_RESULT_LABELS.get(str(item.get('result')), item.get('result', '?'))} "
+                f"(ajuda nível {item.get('help_level', '?')})"
+            )
         return True
 
     def help(self, _argument: str = "") -> bool:
@@ -226,13 +296,35 @@ def build_app(project_root: Path | None = None) -> PythonLabApp:
     )
 
 
-def main() -> None:
+class _ArgumentParser(argparse.ArgumentParser):
+    def error(self, message: str) -> None:
+        self.print_usage(sys.stderr)
+        self.exit(2, f"{self.prog}: erro: argumento inválido: {message}\n")
+
+
+def _argument_parser() -> argparse.ArgumentParser:
+    parser = _ArgumentParser(
+        prog="python-lab",
+        description="Ambiente de prática deliberada em Python.",
+    )
+    parser.add_argument("--version", action="version", version="python-lab 0.1.0")
+    return parser
+
+
+def main(argv: Sequence[str] | None = None) -> int:
+    args = _argument_parser().parse_args(argv)
+    del args
     console = Console()
+    if sys.version_info < (3, 11):
+        console.print(
+            "Python Lab requer Python 3.11 ou mais recente.", style="red", markup=False
+        )
+        return 2
     try:
         app = build_app()
     except (ProgressError, ApplicationError, CatalogError) as exc:
-        console.print(f"[red]{exc}[/red]")
-        return
+        console.print(str(exc), style="red", markup=False)
+        return 1
     cli = PythonLabCLI(app=app, console=console)
     _banner(app, console)
     try:
@@ -245,3 +337,4 @@ def main() -> None:
     except EOFError:
         app.persist()
         console.print("\nProgresso salvo. Até a próxima sessão.")
+    return 0
