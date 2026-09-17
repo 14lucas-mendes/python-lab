@@ -39,6 +39,9 @@ class MissionProgress:
     hints_revealed: int = 0
     reference_viewed: bool = False
     explanation: str | None = None
+    tested_solution_path: str | None = None
+    tested_solution_fingerprint: str | None = None
+    attempt_history: list[dict[str, object]] = field(default_factory=list)
 
 
 @dataclass
@@ -53,3 +56,5 @@ class TestResult:
     passed: bool
     return_code: int
     output: str
+    summary: str = ""
+    diagnostics: tuple[str, ...] = ()

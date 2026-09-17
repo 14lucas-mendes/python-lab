@@ -67,7 +67,7 @@ def test_second_demonstration_consolidates_skill():
 
 
 def test_reveal_hint_requires_confirmation_for_reference():
-    progress = MissionProgress(status="started", hints_revealed=1)
+    progress = MissionProgress(status="started", attempts=1, hints_revealed=1)
     with pytest.raises(HintError, match="(?i)confirma"):
         reveal_hint(mission(), progress, confirm_reference=False)
     hint = reveal_hint(mission(), progress, confirm_reference=True)
@@ -80,3 +80,21 @@ def test_start_blocked_mission_is_rejected():
     progress = AppProgress()
     with pytest.raises(LearningError, match="bloqueada"):
         start_mission(mission("002", prerequisites=("001",)), progress, [mission("001"), mission("002")])
+
+
+def test_completed_mission_can_be_started_again_without_erasing_evidence():
+    progress = AppProgress(
+        missions={"001": MissionProgress(status="completed", attempts=3, explanation="old")},
+        evidence=[{"skill": "debugging", "mission": "001", "result": "demonstrated"}],
+    )
+
+    started = start_mission(mission(), progress, [mission()])
+
+    assert started.status == "started"
+    assert started.attempts == 3
+    assert started.plan is None
+    assert started.tests_passed is False
+    assert started.explanation is None
+    assert progress.evidence == [
+        {"skill": "debugging", "mission": "001", "result": "demonstrated"}
+    ]

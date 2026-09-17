@@ -45,12 +45,19 @@ def recommend_mission(missions: list[Mission], progress: AppProgress) -> Mission
 def start_mission(mission: Mission, progress: AppProgress, missions: list[Mission]) -> MissionProgress:
     if not _is_unlocked(mission, progress):
         raise LearningError(f"Missão {mission.id} bloqueada: conclua os pré-requisitos primeiro")
-    if _is_completed(progress, mission.id):
-        raise LearningError(f"Missão {mission.id} já foi concluída")
     mission_progress = progress.missions.get(mission.id)
     if mission_progress is None:
         mission_progress = MissionProgress()
         progress.missions[mission.id] = mission_progress
+    elif mission_progress.status == "completed":
+        mission_progress.status = "started"
+        mission_progress.plan = None
+        mission_progress.tests_passed = False
+        mission_progress.hints_revealed = 0
+        mission_progress.reference_viewed = False
+        mission_progress.explanation = None
+        mission_progress.tested_solution_path = None
+        mission_progress.tested_solution_fingerprint = None
     mission_progress.status = "started"
     progress.current_mission_id = mission.id
     return mission_progress
