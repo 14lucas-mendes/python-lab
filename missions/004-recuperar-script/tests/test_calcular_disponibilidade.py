@@ -23,10 +23,11 @@ def test_arredonda_somente_o_resultado_final(solution):
     assert solution.calcular_disponibilidade(eventos)["S01"] == 79.99
 
 
-def test_duracao_negativa_e_rejeitada(solution):
+@pytest.mark.parametrize("duracao", [-1, -2, -100])
+def test_duracao_negativa_e_rejeitada(solution, duracao):
     with pytest.raises(ValueError):
         solution.calcular_disponibilidade(
-            [{"equipamento": "S01", "duracao": -1, "periodo": 100}]
+            [{"equipamento": "S01", "duracao": duracao, "periodo": 100}]
         )
 
 

@@ -25,6 +25,7 @@ def test_empate_escolhe_ordem_alfabetica(solution):
     assert solution.consolidar_falhas(registros)["mais_critico"] == "A01"
 
 
-def test_minutos_negativos_sao_rejeitados(solution):
+@pytest.mark.parametrize("minutos", [-1, -2, -100])
+def test_minutos_negativos_sao_rejeitados(solution, minutos):
     with pytest.raises(ValueError):
-        solution.consolidar_falhas([{"equipamento": "S01", "minutos": -1}])
+        solution.consolidar_falhas([{"equipamento": "S01", "minutos": minutos}])

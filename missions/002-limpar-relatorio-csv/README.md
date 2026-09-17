@@ -18,6 +18,7 @@ Um dicionário com:
 
 - Uma linha inválida não pode abortar a leitura do restante.
 - Arquivo vazio deve produzir totais vazios e contagens zero.
+- Equipamento vazio torna a linha inválida.
 - Use a biblioteca padrão.
 
 ## Critérios de aceite

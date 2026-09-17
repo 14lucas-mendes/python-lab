@@ -39,3 +39,14 @@ def test_arquivo_vazio(solution, tmp_path):
     caminho = tmp_path / "relatorio.csv"
     caminho.write_text("", encoding="utf-8")
     assert solution.limpar_relatorio(caminho) == {"validos": 0, "invalidos": 0, "totais": {}}
+
+
+def test_equipamento_vazio_conta_invalido_e_nao_cria_total(solution, tmp_path):
+    caminho = tmp_path / "relatorio.csv"
+    caminho.write_text("equipamento,minutos\n,10\nS02,8\n", encoding="utf-8")
+
+    assert solution.limpar_relatorio(caminho) == {
+        "validos": 1,
+        "invalidos": 1,
+        "totais": {"S02": 8},
+    }

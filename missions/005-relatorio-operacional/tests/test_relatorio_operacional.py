@@ -41,3 +41,30 @@ def test_round_trip_do_arquivo_final(solution, tmp_path):
     solution.write_report(report, output)
     loaded = json.loads(output.read_text(encoding="utf-8"))
     assert loaded == report
+
+
+def test_eventos_repetidos_sao_agregados(solution):
+    report = solution.build_report(
+        [
+            {"equipamento": "EQ-99", "minutos": 7},
+            {"equipamento": "EQ-99", "minutos": 8},
+        ],
+        [],
+    )
+
+    assert report == [
+        {"id": "EQ-99", "total_falhas": 15, "status": "desconhecido"}
+    ]
+
+
+def test_linha_invalida_e_seguida_por_linha_valida(solution, tmp_path):
+    csv_path = tmp_path / "eventos.csv"
+    json_path = tmp_path / "inventario.json"
+    csv_path.write_text(
+        "equipamento,minutos\nEQ-1,abc\nEQ-1,10\n", encoding="utf-8"
+    )
+    json_path.write_text("[]", encoding="utf-8")
+
+    eventos, _ = solution.load_inputs(csv_path, json_path)
+
+    assert eventos == [{"equipamento": "EQ-1", "minutos": 10}]

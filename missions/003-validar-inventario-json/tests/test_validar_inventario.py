@@ -26,16 +26,16 @@ def test_arquivo_malformado_gera_value_error(solution, tmp_path):
         solution.validar_inventario(caminho)
 
 
-def test_campos_obrigatorios_ausentes(solution, tmp_path):
+@pytest.mark.parametrize("missing_field", ["id", "tipo", "status"])
+def test_campos_obrigatorios_ausentes(solution, tmp_path, missing_field):
     caminho = tmp_path / "inventario.json"
-    caminho.write_text(
-        json.dumps([{"id": "EQ-1", "tipo": "servidor"}]),
-        encoding="utf-8",
-    )
+    item = {"id": "EQ-1", "tipo": "servidor", "status": "ativo"}
+    item.pop(missing_field)
+    caminho.write_text(json.dumps([item]), encoding="utf-8")
     validos, inconsistencias = solution.validar_inventario(caminho)
     assert validos == []
     assert inconsistencias[0]["index"] == 0
-    assert "status" in inconsistencias[0]["errors"][0]
+    assert missing_field in " ".join(inconsistencias[0]["errors"])
 
 
 def test_ids_duplicados(solution, tmp_path):
