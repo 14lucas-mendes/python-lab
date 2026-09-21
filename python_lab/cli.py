@@ -11,23 +11,55 @@ from python_lab.app import ApplicationError, PythonLabApp
 from python_lab.catalog import CatalogError, load_goal, load_missions, load_skills
 from python_lab.learning import CompletionError, HintError, LearningError
 from python_lab.progress import ProgressError, ProgressRepository
+from python_lab.session import SessionError, SessionLog
 
 
 COMMANDS = (
-    ("/goal", "Exibir objetivo e critérios de sucesso"),
-    ("/skills", "Exibir mapa de competências e evidências"),
-    ("/missions", "Listar missões e estados"),
-    ("/start <id>", "Iniciar ou repetir uma missão desbloqueada"),
-    ("/plan", "Registrar ou revisar o planejamento"),
-    ("/test", "Executar os testes da missão atual"),
-    ("/hint", "Liberar a próxima pista"),
-    ("/explain", "Registrar a explicação final"),
-    ("/status", "Exibir estado da sessão"),
-    ("/history", "Exibir histórico de tentativas da missão atual"),
-    ("/evidence", "Exibir evidências de competências"),
-    ("/help", "Listar comandos disponíveis"),
-    ("/exit", "Salvar e encerrar com segurança"),
+    ("/goal", "/g", "Exibir objetivo e critérios de sucesso"),
+    ("/skills", "/sk", "Exibir mapa de competências e evidências"),
+    ("/missions", "/ms", "Listar missões e estados"),
+    ("/start <id>", "", "Iniciar ou repetir uma missão desbloqueada"),
+    ("/plan", "/p", "Registrar ou revisar o planejamento"),
+    ("/test", "/t", "Executar os testes da missão atual"),
+    ("/hint", "/h", "Liberar a próxima pista"),
+    ("/explain", "/e", "Registrar a explicação final"),
+    ("/status", "/st", "Exibir estado da sessão"),
+    ("/history", "/hi", "Exibir histórico de tentativas da missão atual"),
+    ("/session", "/se", "Exibir o histórico desta sessão"),
+    ("/evidence", "/ev", "Exibir evidências de competências"),
+    ("/help", "/?", "Listar comandos disponíveis"),
+    ("/exit", "/q", "Salvar e encerrar com segurança"),
 )
+
+ALIASES = {
+    "/g": "/goal",
+    "/sk": "/skills",
+    "/ms": "/missions",
+    "/p": "/plan",
+    "/t": "/test",
+    "/h": "/hint",
+    "/e": "/explain",
+    "/st": "/status",
+    "/hi": "/history",
+    "/se": "/session",
+    "/ev": "/evidence",
+    "/?": "/help",
+    "/q": "/exit",
+}
+
+DEFAULT_SUMMARIES = {
+    "/goal": "Goal exibido",
+    "/skills": "Skills exibidas",
+    "/missions": "Missões listadas",
+    "/plan": "Planejamento registrado",
+    "/hint": "Pista liberada",
+    "/status": "Status exibido",
+    "/history": "Histórico de tentativas exibido",
+    "/session": "Histórico da sessão exibido",
+    "/evidence": "Evidências exibidas",
+    "/help": "Ajuda exibida",
+    "/exit": "Sessão encerrada",
+}
 
 SKILL_LABELS = {
     "practicing": "Em prática",
@@ -50,9 +82,16 @@ EVIDENCE_RESULT_LABELS = {
 
 
 class PythonLabCLI:
-    def __init__(self, app: PythonLabApp, console: Console | None = None) -> None:
+    def __init__(
+        self,
+        app: PythonLabApp,
+        console: Console | None = None,
+        session_log: SessionLog | None = None,
+    ) -> None:
         self.app = app
         self.console = console or Console()
+        self.session_log = session_log
+        self._last_summary = ""
         self.handlers = {
             "/goal": self.show_goal,
             "/skills": self.show_skills,
@@ -64,6 +103,7 @@ class PythonLabCLI:
             "/explain": self.explain,
             "/status": self.status,
             "/history": self.history,
+            "/session": self.session,
             "/evidence": self.evidence,
             "/help": self.help,
             "/exit": self.exit,
@@ -74,17 +114,51 @@ class PythonLabCLI:
         if not stripped:
             return True
         parts = stripped.split(maxsplit=1)
-        command = parts[0].lower()
+        raw_command = parts[0].lower()
         argument = parts[1] if len(parts) > 1 else ""
+        if not raw_command.startswith("/"):
+            suggested = f"/{raw_command}"
+            if suggested in self.handlers or suggested in ALIASES:
+                message = f"Comando desconhecido. Use {suggested}. Digite /help para a lista."
+            else:
+                message = "Comando desconhecido. Digite /help para a lista."
+            self.console.print(message)
+            self._record(raw_command, "Comando desconhecido")
+            return True
+        command = ALIASES.get(raw_command, raw_command)
         handler = self.handlers.get(command)
         if handler is None:
             self.console.print("Comando desconhecido. Digite /help para a lista.")
+            self._record(raw_command, "Comando desconhecido")
             return True
+        self._last_summary = DEFAULT_SUMMARIES.get(command, f"{command} executado")
+        display = f"{command} {argument}".strip()
         try:
-            return handler(argument)
-        except (ApplicationError, LearningError, ProgressError) as exc:
+            result = handler(argument)
+        except (ApplicationError, LearningError, ProgressError, SessionError) as exc:
             self.console.print(str(exc), style="red", markup=False)
+            self._record(display, str(exc))
+            self._print_next_step()
             return True
+        self._record(display, self._last_summary)
+        if result:
+            if command != "/status":
+                self._print_next_step()
+        elif self.session_log is not None:
+            self.session_log.close()
+        return result
+
+    def _record(self, command: str, summary: str) -> None:
+        if self.session_log is None:
+            return
+        self.session_log.record(command, summary)
+
+    def _print_next_step(self) -> None:
+        self.console.print(f"Próximo: {self.app.next_step()}", style="dim")
+
+    def _printable(self, text: str) -> str:
+        encoding = getattr(self.console.file, "encoding", None) or "utf-8"
+        return text.encode(encoding, errors="replace").decode(encoding, errors="replace")
 
     def show_goal(self, _argument: str = "") -> bool:
         criteria = "\n".join(f"- {item}" for item in self.app.goal.success_criteria)
@@ -132,12 +206,12 @@ class PythonLabCLI:
         mission_id = argument.strip()
         if not mission_id:
             self.console.print("Uso: /start <id>")
+            self._last_summary = "Uso de /start incompleto"
             return True
         mission = self.app.start(mission_id)
+        self._last_summary = f"Missão {mission.id} iniciada"
         self.console.print(f"Missão {mission.id} iniciada: {mission.title}")
         self.console.print(f"Resumo: {mission.summary}")
-        prerequisites = ", ".join(mission.prerequisites) or "nenhum"
-        self.console.print(f"Pré-requisitos: {prerequisites}")
         self.console.print(f"Leia o enunciado em: {mission.test_path.parent / 'README.md'}")
         self.console.print(f"Edite a solução em: {mission.solution_path}")
         return True
@@ -151,22 +225,31 @@ class PythonLabCLI:
             "risks": self.console.input("Possíveis erros (risks): ").strip(),
         }
         self.app.save_plan(plan)
-        self.console.print("Planejamento registrado.")
+        body = (
+            f"Entrada: {plan['input']}\n"
+            f"Saída: {plan['output']}\n"
+            f"Etapas: {plan['steps']}\n"
+            f"Riscos: {plan['risks']}"
+        )
+        self.console.print(Panel(body, title="Planejamento"))
         return True
 
     def test(self, _argument: str = "") -> bool:
         result = self.app.run_current_tests()
         style = "green" if result.passed else "red"
         status = "passaram" if result.passed else "falharam"
+        self._last_summary = "Testes passaram" if result.passed else "Testes falharam"
         self.console.print(f"[{style}]Testes {status} (código {result.return_code})[/{style}]")
         if result.summary:
-            self.console.print(f"Resumo: {result.summary}", markup=False)
+            self.console.print(f"Resumo: {self._printable(result.summary)}", markup=False)
+        if result.passed:
+            return True
         if result.diagnostics:
             self.console.print("Diagnóstico:", markup=False)
             for item in result.diagnostics[:5]:
-                self.console.print(f"- {item}", markup=False)
+                self.console.print(f"- {self._printable(item)}", markup=False)
         if result.output.strip():
-            self.console.print(result.output, markup=False)
+            self.console.print(self._printable(result.output), markup=False)
         return True
 
     def hint(self, argument: str = "") -> bool:
@@ -179,6 +262,7 @@ class PythonLabCLI:
                 "Use /hint confirm para liberar a solução de referência.",
                 markup=False,
             )
+            self._last_summary = str(exc)
             return True
         self.console.print(Panel(text, title="Pista"))
         return True
@@ -191,10 +275,16 @@ class PythonLabCLI:
         except CompletionError as exc:
             self.console.print("Explicação registrada.")
             self.console.print(str(exc), style="yellow", markup=False)
+            self._last_summary = "Explicação registrada; conclusão pendente"
             return True
+        self._last_summary = "Missão concluída"
         self.console.print("[green]Missão concluída![/green]")
+        table = Table(title="Evidências")
+        table.add_column("Skill")
+        table.add_column("Resultado")
         for item in evidence:
-            self.console.print(f"- {item['skill']}: {item['result']}")
+            table.add_row(str(item["skill"]), str(item["result"]))
+        self.console.print(table)
         recommended = self.app.recommended()
         if recommended is not None:
             self.console.print(f"Próxima missão: {recommended.id} — {recommended.title}")
@@ -227,6 +317,7 @@ class PythonLabCLI:
             )
         except ApplicationError:
             pass
+        lines.append(f"Próximo: {self.app.next_step()}")
         self.console.print(Panel("\n".join(lines), title="Sessão"))
         return True
 
@@ -240,6 +331,33 @@ class PythonLabCLI:
             state = "passou" if attempt.get("passed") else "falhou"
             summary = attempt.get("summary") or "sem resumo"
             self.console.print(f"{index}. {state} — {summary}")
+        return True
+
+    def session(self, argument: str = "") -> bool:
+        if self.session_log is None:
+            self.console.print("Histórico de sessão indisponível nesta execução.")
+            return True
+        if argument.strip().lower() == "all":
+            previous = self.session_log.previous_sessions()
+            if not previous:
+                self.console.print("Nenhuma sessão anterior.")
+                return True
+            self.console.print("Sessões anteriores:")
+            for item in previous:
+                started = str(item.get("started_at", "?"))
+                events = item.get("events", [])
+                count = len(events) if isinstance(events, list) else 0
+                self.console.print(f"- {started} ({count} evento(s))")
+            return True
+        events = self.session_log.current_events()
+        if not events:
+            self.console.print("Nenhum evento nesta sessão.")
+            return True
+        self.console.print("Sessão atual:")
+        for index, event in enumerate(events, start=1):
+            command = event.get("command", "?")
+            summary = event.get("summary", "")
+            self.console.print(f"{index}. {command} — {summary}")
         return True
 
     def evidence(self, _argument: str = "") -> bool:
@@ -258,9 +376,10 @@ class PythonLabCLI:
     def help(self, _argument: str = "") -> bool:
         table = Table(title="Comandos")
         table.add_column("Comando")
+        table.add_column("Atalho")
         table.add_column("Responsabilidade")
-        for command, description in COMMANDS:
-            table.add_row(command, description)
+        for command, shortcut, description in COMMANDS:
+            table.add_row(command, shortcut, description)
         self.console.print(table)
         return True
 
@@ -280,7 +399,8 @@ def _banner(app: PythonLabApp, console: Console) -> None:
         f"{app.goal.title}\n\n"
         f"{app.goal.statement}\n\n"
         f"Missão atual: {current}\n"
-        f"Recomendada: {recommendation}"
+        f"Recomendada: {recommendation}\n"
+        f"Próximo: {app.next_step()}"
     )
     console.print(Panel(body, title="Python Lab"))
 
@@ -307,7 +427,7 @@ def _argument_parser() -> argparse.ArgumentParser:
         prog="python-lab",
         description="Ambiente de prática deliberada em Python.",
     )
-    parser.add_argument("--version", action="version", version="python-lab 0.1.0")
+    parser.add_argument("--version", action="version", version="python-lab 0.2.0")
     return parser
 
 
@@ -320,12 +440,15 @@ def main(argv: Sequence[str] | None = None) -> int:
             "Python Lab requer Python 3.11 ou mais recente.", style="red", markup=False
         )
         return 2
+    session_log: SessionLog | None = None
     try:
         app = build_app()
-    except (ProgressError, ApplicationError, CatalogError) as exc:
+        session_log = SessionLog(app.project_root / "data" / "sessions.json")
+        session_log.start()
+    except (ProgressError, ApplicationError, CatalogError, SessionError) as exc:
         console.print(str(exc), style="red", markup=False)
         return 1
-    cli = PythonLabCLI(app=app, console=console)
+    cli = PythonLabCLI(app=app, console=console, session_log=session_log)
     _banner(app, console)
     try:
         while True:
@@ -333,8 +456,12 @@ def main(argv: Sequence[str] | None = None) -> int:
             if not cli.execute(line):
                 break
     except KeyboardInterrupt:
+        if session_log is not None:
+            session_log.close("Sessão interrompida")
         console.print("\nSessão encerrada. O último estado confirmado foi preservado.")
     except EOFError:
         app.persist()
+        if session_log is not None:
+            session_log.close("Sessão encerrada")
         console.print("\nProgresso salvo. Até a próxima sessão.")
     return 0

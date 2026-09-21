@@ -19,7 +19,7 @@ def test_external_version_prints_version_and_exits(capsys):
 
     captured = capsys.readouterr()
     assert exc_info.value.code == 0
-    assert "0.1.0" in captured.out
+    assert "0.2.0" in captured.out
 
 
 def test_external_argument_is_rejected(capsys):

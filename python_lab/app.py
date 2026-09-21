@@ -141,6 +141,23 @@ class PythonLabApp:
         self.persist()
         return evidence
 
+    def next_step(self) -> str:
+        if not self.progress.current_mission_id:
+            recommended = self.recommended()
+            if recommended is None:
+                return "Todas as missões concluídas."
+            return f"Inicie a missão {recommended.id} com /start {recommended.id}"
+        progress = self.current_progress()
+        if not progress.plan or not all(
+            key in progress.plan and str(progress.plan[key]).strip() for key in PLAN_KEYS
+        ):
+            return "Registre o planejamento com /plan"
+        if not progress.tests_passed:
+            return "Edite a solução e execute /test"
+        if not self.tests_are_current():
+            return "Execute /test novamente para a solução atual"
+        return "Registre a explicação com /explain"
+
     def skill_states(self) -> dict[str, str]:
         rank = {"practicing": 1, "demonstrated": 2, "consolidated": 3}
         latest: dict[str, str] = {}
