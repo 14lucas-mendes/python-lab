@@ -1,5 +1,7 @@
 # Mission 002 — Limpar relatório CSV
 
+Ciclo 4 · lesson_02-arquivos-erros
+
 Um relatório operacional chegou com linhas incompletas. Você precisa ler o arquivo, aproveitar só o que for confiável e contar o que foi rejeitado.
 
 ## Entrada

@@ -1,0 +1,12 @@
+{
+  "id": "009",
+  "slug": "historico-git",
+  "title": "Ler histórico de commits",
+  "summary": "Interpretar a saída de git log --oneline e contar commits por prefixo.",
+  "skills": ["git", "strings_validation", "collections", "functions"],
+  "prerequisites": ["008"],
+  "cycle": 3,
+  "lesson_id": "lesson_04-descoberta-processo",
+  "tests": "tests",
+  "solution": "starter.py"
+}

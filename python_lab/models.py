@@ -28,6 +28,17 @@ class Mission:
     test_path: Path
     solution_path: Path
     hints: tuple[str, ...]
+    cycle: int = 1
+    lesson_id: str = ""
+
+
+@dataclass(frozen=True)
+class RoadmapCycle:
+    cycle: int
+    title: str
+    lesson_id: str
+    milestone: str
+    status: str
 
 
 @dataclass

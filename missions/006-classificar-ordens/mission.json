@@ -1,0 +1,12 @@
+{
+  "id": "006",
+  "slug": "classificar-ordens",
+  "title": "Classificar ordens de serviço",
+  "summary": "Classificar ordens com condicionais exclusivos, a regra específica antes da geral e uma guarda antes de acessar a lista.",
+  "skills": ["functions", "edge_cases", "decomposition"],
+  "prerequisites": ["001"],
+  "cycle": 1,
+  "lesson_id": "lesson_01-python-core",
+  "tests": "tests",
+  "solution": "starter.py"
+}

@@ -1,0 +1,93 @@
+[
+  {
+    "cycle": 1,
+    "title": "Lógica, decomposição e Python core",
+    "lesson_id": "lesson_01-python-core",
+    "milestone": "Resolver entradas, regras e saídas com funções e testes simples.",
+    "status": "playable"
+  },
+  {
+    "cycle": 2,
+    "title": "Debugging sistemático",
+    "lesson_id": "lesson_03-testes-git",
+    "milestone": "Formular hipóteses, isolar uma falha e verificar a correção.",
+    "status": "playable"
+  },
+  {
+    "cycle": 3,
+    "title": "Git e GitHub",
+    "lesson_id": "lesson_04-descoberta-processo",
+    "milestone": "Histórico legível e remoto quando aplicável.",
+    "status": "playable"
+  },
+  {
+    "cycle": 4,
+    "title": "Arquivos, CSV e JSON",
+    "lesson_id": "lesson_02-arquivos-erros",
+    "milestone": "Ler arquivos completos, tratar erros e modularizar.",
+    "status": "playable"
+  },
+  {
+    "cycle": 5,
+    "title": "SQL relacional",
+    "lesson_id": "lesson_05-automacao-confiavel",
+    "milestone": "Consultar dados operacionais com filtros, joins e agregações.",
+    "status": "playable"
+  },
+  {
+    "cycle": 6,
+    "title": "HTTP e APIs REST",
+    "lesson_id": "lesson_06-http-apis",
+    "milestone": "Cliente de API pelo terminal com falhas tratadas.",
+    "status": "planned"
+  },
+  {
+    "cycle": 7,
+    "title": "Integração de sistemas",
+    "lesson_id": "lesson_07-fastapi-dados",
+    "milestone": "Conectar fontes simuladas e registrar falhas do fluxo.",
+    "status": "planned"
+  },
+  {
+    "cycle": 8,
+    "title": "Selenium",
+    "lesson_id": "lesson_08-llm-estruturado",
+    "milestone": "Automatizar navegação controlada com dados fictícios.",
+    "status": "planned"
+  },
+  {
+    "cycle": 9,
+    "title": "Demo: dados e regras",
+    "lesson_id": "lesson_09-seguranca-custo",
+    "milestone": "Modelar falhas, reincidências e atividades de manutenção.",
+    "status": "planned"
+  },
+  {
+    "cycle": 10,
+    "title": "Demo: coleta e processamento",
+    "lesson_id": "lesson_10-agente-ferramentas",
+    "milestone": "Importar e validar registros operacionais.",
+    "status": "planned"
+  },
+  {
+    "cycle": 11,
+    "title": "Demo: relatórios e integração",
+    "lesson_id": "lesson_11-agente-controle",
+    "milestone": "Gerar relatório de reincidências e integrar fonte simulada.",
+    "status": "planned"
+  },
+  {
+    "cycle": 12,
+    "title": "Qualidade",
+    "lesson_id": "lesson_12-docker-ci",
+    "milestone": "pytest, debugging e refatoração comprovados.",
+    "status": "planned"
+  },
+  {
+    "cycle": 13,
+    "title": "GitHub e processos seletivos",
+    "lesson_id": "lesson_13-deploy-portfolio",
+    "milestone": "Repositório legível, explicação técnica e testes de entrada.",
+    "status": "planned"
+  }
+]

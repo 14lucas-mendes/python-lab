@@ -1,0 +1,7 @@
+[
+  "Cada linha útil tem um hash e, depois do primeiro espaço, o resto é a mensagem.",
+  "Linhas em branco não são commits. Vale a pena filtrá-las antes de quebrar a linha.",
+  "O prefixo é o pedaço antes do primeiro dois-pontos. Sem dois-pontos, a mensagem não entra na contagem.",
+  "split(' ', 1) separa hash e mensagem. split(':', 1)[0] extrai o prefixo. Some num dicionário.",
+  {"type": "reference", "path": "reference_solution.py"}
+]

@@ -1,0 +1,7 @@
+[
+  "A função devolve três números, um por turno. Qual é a ordem combinada: manhã, tarde, noite?",
+  "Uma lista vazia não some nada. Qual literal representa três turnos sem minutos?",
+  "Se só existe um evento noturno de 8 minutos, o que deve aparecer nas duas primeiras posições?",
+  "Some à mão: manhã 10, tarde 5, noite 20 vira [10, 5, 20]. A implementação com defeito esquece a noite — esse caso a denuncia.",
+  {"type": "reference", "path": "reference_solution.py"}
+]

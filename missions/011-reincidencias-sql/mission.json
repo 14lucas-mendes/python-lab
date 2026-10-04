@@ -1,0 +1,12 @@
+{
+  "id": "011",
+  "slug": "reincidencias-sql",
+  "title": "Reincidências com JOIN e agregação",
+  "summary": "Unir equipamentos e falhas, agrupar reincidências e consultar com parâmetro.",
+  "skills": ["sql", "collections", "edge_cases"],
+  "prerequisites": ["010"],
+  "cycle": 5,
+  "lesson_id": "lesson_05-automacao-confiavel",
+  "tests": "tests",
+  "solution": "starter.py"
+}

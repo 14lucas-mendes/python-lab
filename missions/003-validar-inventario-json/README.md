@@ -1,5 +1,7 @@
 # Mission 003 — Validar inventário JSON
 
+Ciclo 4 · lesson_02-arquivos-erros
+
 O cadastro de equipamentos misturou registros completos com dados inconsistentes. Separe o que pode ser usado do que precisa de correção.
 
 ## Entrada

@@ -4,7 +4,9 @@
   "title": "Recuperar script defeituoso",
   "summary": "Investigar código existente que falha em casos específicos.",
   "skills": ["debugging", "pytest", "edge_cases", "ai_code_review"],
-  "prerequisites": ["003"],
+  "prerequisites": ["001"],
+  "cycle": 2,
+  "lesson_id": "lesson_03-testes-git",
   "tests": "tests",
   "solution": "starter.py"
 }

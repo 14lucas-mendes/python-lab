@@ -52,6 +52,8 @@ def test_tui_shows_banner_next_step_and_composer(app):
     async def scenario(tui, _pilot):
         transcript = _transcript(tui)
         assert "Python Lab" in transcript or "001" in transcript
+        assert "Ciclo" in transcript
+        assert "Lógica, decomposição e Python core" in transcript
         assert "/start" in _text(tui.query_one("#next-step", Static))
         composer = tui.query_one("#composer", Composer)
         assert composer.placeholder == "Digite / para comandos"

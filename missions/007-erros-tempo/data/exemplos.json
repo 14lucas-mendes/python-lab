@@ -1,0 +1,5 @@
+{
+  "linhas": ["  alarme  ", "bomba"],
+  "minutos": 12,
+  "alertas": ["S01 parado", "S03 ruído"]
+}

@@ -5,6 +5,8 @@
   "summary": "Somar indisponibilidade por equipamento e identificar o mais crítico.",
   "skills": ["functions", "collections", "decomposition", "problem_understanding"],
   "prerequisites": [],
+  "cycle": 1,
+  "lesson_id": "lesson_01-python-core",
   "tests": "tests",
   "solution": "starter.py"
 }

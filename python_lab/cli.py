@@ -8,7 +8,7 @@ from rich.panel import Panel
 from rich.table import Table
 
 from python_lab.app import ApplicationError, PythonLabApp
-from python_lab.catalog import CatalogError, load_goal, load_missions, load_skills
+from python_lab.catalog import CatalogError, load_goal, load_missions, load_roadmap, load_skills
 from python_lab.learning import CompletionError, HintError, LearningError
 from python_lab.progress import ProgressError, ProgressRepository
 from python_lab.session import SessionError, SessionLog
@@ -184,23 +184,38 @@ class PythonLabCLI:
         return True
 
     def show_missions(self, _argument: str = "") -> bool:
-        table = Table(title="Missions")
-        table.add_column("ID")
-        table.add_column("Título")
-        table.add_column("Estado")
+        by_cycle: dict[int, list] = {}
         for mission in self.app.missions:
-            progress = self.app.progress.missions.get(mission.id)
-            if progress is not None and progress.status in {"started", "completed"}:
-                status = MISSION_STATUS_LABELS.get(progress.status, progress.status)
-            else:
-                unlocked = all(
-                    self.app.progress.missions.get(prerequisite) is not None
-                    and self.app.progress.missions[prerequisite].status == "completed"
-                    for prerequisite in mission.prerequisites
-                )
-                status = "disponível" if unlocked else "bloqueada"
-            table.add_row(mission.id, mission.title, status)
-        self.console.print(table)
+            by_cycle.setdefault(mission.cycle, []).append(mission)
+        for cycle in sorted(by_cycle):
+            title = self.app.cycle_title(cycle)
+            table = Table(title=f"Ciclo {cycle} — {title}")
+            table.add_column("ID")
+            table.add_column("Título")
+            table.add_column("Lição")
+            table.add_column("Estado")
+            for mission in by_cycle[cycle]:
+                progress = self.app.progress.missions.get(mission.id)
+                if progress is not None and progress.status in {"started", "completed"}:
+                    status = MISSION_STATUS_LABELS.get(progress.status, progress.status)
+                else:
+                    unlocked = all(
+                        self.app.progress.missions.get(prerequisite) is not None
+                        and self.app.progress.missions[prerequisite].status == "completed"
+                        for prerequisite in mission.prerequisites
+                    )
+                    status = "disponível" if unlocked else "bloqueada"
+                table.add_row(mission.id, mission.title, mission.lesson_id, status)
+            self.console.print(table)
+        planned = [item for item in self.app.roadmap if item.status == "planned"]
+        if planned:
+            table = Table(title="Ciclos planejados")
+            table.add_column("Ciclo")
+            table.add_column("Foco")
+            table.add_column("Lição")
+            for item in planned:
+                table.add_row(str(item.cycle), item.title, item.lesson_id)
+            self.console.print(table)
         return True
 
     def start(self, argument: str = "") -> bool:
@@ -417,12 +432,14 @@ def _banner(app: PythonLabApp, console: Console) -> None:
 
 def build_app(project_root: Path | None = None) -> PythonLabApp:
     root = project_root or Path(__file__).resolve().parent.parent
+    missions = load_missions(root / "missions")
     return PythonLabApp(
         goal=load_goal(root / "data" / "goal.json"),
         skills=load_skills(root / "data" / "skills.json"),
-        missions=load_missions(root / "missions"),
+        missions=missions,
         repository=ProgressRepository(root / "data" / "progress.json"),
         project_root=root,
+        roadmap=load_roadmap(root / "data" / "roadmap.json", missions),
     )
 
 

@@ -1,5 +1,7 @@
 # Mission 004 — Recuperar script defeituoso
 
+Ciclo 2 · lesson_03-testes-git
+
 Um script de disponibilidade foi gerado às pressas e passa no caminho principal, mas quebra em casos reais. Seu trabalho é ler o código, entender os testes e corrigir o comportamento.
 
 ## Entrada

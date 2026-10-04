@@ -15,9 +15,9 @@
   {"id": "pytest", "name": "Testes com pytest", "category": "engenharia"},
   {"id": "modules", "name": "Organização básica em módulos", "category": "engenharia"},
   {"id": "ai_code_review", "name": "Leitura crítica de código gerado por IA", "category": "engenharia"},
-  {"id": "sql", "name": "SQL", "category": "futuro", "future": true},
+  {"id": "sql", "name": "SQL", "category": "python"},
   {"id": "rest_apis", "name": "APIs REST", "category": "futuro", "future": true},
-  {"id": "git", "name": "Git aplicado", "category": "futuro", "future": true},
+  {"id": "git", "name": "Git aplicado", "category": "engenharia"},
   {"id": "selenium", "name": "Selenium", "category": "futuro", "future": true},
   {"id": "ai_systems", "name": "Sistemas com IA", "category": "futuro", "future": true}
 ]

@@ -1,0 +1,7 @@
+[
+  "O que precisa existir na ordem antes de você olhar o primeiro item?",
+  "Uma falha urgente é um caso especial de falha. Qual pergunta você faz primeiro?",
+  "Depois da guarda, use if/elif/else para que só um ramo responda.",
+  "if not itens: erro; se itens[0] bloqueado: bloqueada; elif falha e urgente: emergencia; elif falha: corretiva; elif preventiva: preventiva; else: administrativa.",
+  {"type": "reference", "path": "reference_solution.py"}
+]

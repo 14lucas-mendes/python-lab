@@ -2,7 +2,7 @@ import json
 from pathlib import Path
 from typing import Any
 
-from python_lab.models import Goal, Mission, Skill
+from python_lab.models import Goal, Mission, RoadmapCycle, Skill
 
 
 class CatalogError(Exception):
@@ -38,6 +38,12 @@ def _as_tuple(value: Any, field: str, path: Path) -> tuple[str, ...]:
     if not isinstance(value, list) or any(not isinstance(item, str) for item in value):
         raise CatalogError(f"Campo {field} deve ser uma lista de strings em {path}")
     return tuple(value)
+
+
+def _cycle_number(value: Any, path: Path) -> int:
+    if isinstance(value, bool) or not isinstance(value, int) or value < 1 or value > 13:
+        raise CatalogError(f"Campo cycle deve ser um inteiro de 1 a 13 em {path}")
+    return value
 
 
 def load_goal(path: Path) -> Goal:
@@ -109,6 +115,8 @@ def _load_mission(mission_path: Path) -> Mission:
         test_path=(mission_dir / tests).resolve(),
         solution_path=(mission_dir / solution).resolve(),
         hints=_load_hints(mission_dir),
+        cycle=_cycle_number(_require(payload, "cycle", mission_path), mission_path),
+        lesson_id=_text(_require(payload, "lesson_id", mission_path), "lesson_id", mission_path),
     )
 
 
@@ -122,7 +130,7 @@ def load_missions(root: Path) -> list[Mission]:
     if not mission_files:
         raise CatalogError(f"Nenhuma missão encontrada em: {root}")
     missions = [_load_mission(path) for path in mission_files]
-    missions.sort(key=lambda mission: mission.id)
+    missions.sort(key=lambda mission: (mission.cycle, mission.id))
     ids = [mission.id for mission in missions]
     if len(ids) != len(set(ids)):
         duplicate = next(item for item in ids if ids.count(item) > 1)
@@ -152,3 +160,41 @@ def load_missions(root: Path) -> list[Mission]:
     for mission_id in graph:
         visit(mission_id)
     return missions
+
+
+def load_roadmap(path: Path, missions: list[Mission] | None = None) -> tuple[RoadmapCycle, ...]:
+    payload = _read_json(path)
+    if not isinstance(payload, list):
+        raise CatalogError(f"Roteiro deve ser uma lista JSON em {path}")
+    cycles: list[RoadmapCycle] = []
+    seen: set[int] = set()
+    for item in payload:
+        if not isinstance(item, dict):
+            raise CatalogError(f"Cada ciclo do roteiro deve ser um objeto JSON em {path}")
+        cycle = _cycle_number(_require(item, "cycle", path), path)
+        if cycle in seen:
+            raise CatalogError(f"Ciclo duplicado no roteiro: {cycle}")
+        seen.add(cycle)
+        status = _text(_require(item, "status", path), "status", path)
+        if status not in {"playable", "planned"}:
+            raise CatalogError(f"Status de ciclo inválido em {path}: {status}")
+        cycles.append(
+            RoadmapCycle(
+                cycle=cycle,
+                title=_text(_require(item, "title", path), "title", path),
+                lesson_id=_text(_require(item, "lesson_id", path), "lesson_id", path),
+                milestone=_text(_require(item, "milestone", path), "milestone", path),
+                status=status,
+            )
+        )
+    if seen != set(range(1, 14)):
+        raise CatalogError("Roteiro deve conter exatamente os ciclos 1 a 13")
+    ordered = tuple(sorted(cycles, key=lambda item: item.cycle))
+    if missions:
+        known = {item.cycle for item in ordered}
+        for mission in missions:
+            if mission.cycle not in known:
+                raise CatalogError(
+                    f"Missão {mission.id} referencia ciclo inexistente: {mission.cycle}"
+                )
+    return ordered

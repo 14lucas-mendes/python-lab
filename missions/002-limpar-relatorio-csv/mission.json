@@ -4,7 +4,9 @@
   "title": "Limpar relatório CSV",
   "summary": "Ler registros, rejeitar linhas inválidas e produzir um resumo confiável.",
   "skills": ["files", "csv", "strings_validation", "exceptions"],
-  "prerequisites": ["001"],
+  "prerequisites": ["009"],
+  "cycle": 4,
+  "lesson_id": "lesson_02-arquivos-erros",
   "tests": "tests",
   "solution": "starter.py"
 }

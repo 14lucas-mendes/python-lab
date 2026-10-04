@@ -1,0 +1,5 @@
+[
+  {"turno": "manha", "minutos": 10},
+  {"turno": "tarde", "minutos": 5},
+  {"turno": "noite", "minutos": 20}
+]

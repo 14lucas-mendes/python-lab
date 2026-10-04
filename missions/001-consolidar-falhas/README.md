@@ -1,5 +1,7 @@
 # Mission 001 — Consolidar falhas
 
+Ciclo 1 · lesson_01-python-core
+
 Uma operação de plantão precisa saber, a partir de uma lista de interrupções, quanto tempo cada equipamento ficou indisponível e qual deles é o mais crítico.
 
 ## Entrada

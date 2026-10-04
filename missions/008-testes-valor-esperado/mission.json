@@ -1,0 +1,12 @@
+{
+  "id": "008",
+  "slug": "testes-valor-esperado",
+  "title": "Testes com valor esperado",
+  "summary": "Escrever testes com totais calculados à mão e literais de lista, sem copiar o resultado da implementação.",
+  "skills": ["pytest", "collections", "edge_cases"],
+  "prerequisites": ["004"],
+  "cycle": 2,
+  "lesson_id": "lesson_03-testes-git",
+  "tests": "tests",
+  "solution": "test_minha_solucao.py"
+}

@@ -1,0 +1,12 @@
+{
+  "id": "010",
+  "slug": "consultar-falhas-sql",
+  "title": "Consultar falhas com SQL",
+  "summary": "Consultar um banco SQLite com filtro opcional e ordenação por minutos.",
+  "skills": ["sql", "functions", "edge_cases"],
+  "prerequisites": ["005"],
+  "cycle": 5,
+  "lesson_id": "lesson_05-automacao-confiavel",
+  "tests": "tests",
+  "solution": "starter.py"
+}

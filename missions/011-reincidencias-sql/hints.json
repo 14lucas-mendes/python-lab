@@ -1,0 +1,7 @@
+[
+  "Reincidência é quantidade de falhas por equipamento, não a soma dos minutos.",
+  "O nome não está em falhas. Qual tabela você precisa juntar para devolvê-lo?",
+  "HAVING filtra depois do GROUP BY. O mínimo entra como parâmetro, igual ao código da consulta pontual.",
+  "JOIN equipamentos ON falhas.equipamento = equipamentos.codigo, GROUP BY codigo e nome, HAVING COUNT(*) >= ?. Na consulta pontual use WHERE equipamento = ?.",
+  {"type": "reference", "path": "reference_solution.py"}
+]

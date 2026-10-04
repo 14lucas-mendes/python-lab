@@ -1,0 +1,7 @@
+[
+  "A conexão já está aberta. Você só precisa de SELECT, não de criar tabela.",
+  "ORDER BY minutos DESC coloca a falha mais longa primeiro.",
+  "Quando o equipamento vem preenchido, o WHERE deve usar um placeholder (?), não uma f-string.",
+  "SELECT equipamento, minutos, registrado_em FROM falhas WHERE equipamento = ? ORDER BY minutos DESC. Para o total, COALESCE(SUM(minutos), 0).",
+  {"type": "reference", "path": "reference_solution.py"}
+]

@@ -1,0 +1,12 @@
+[
+  {
+    "tipo": "falha",
+    "prioridade": "urgente",
+    "itens": [{"bloqueado": false}]
+  },
+  {
+    "tipo": "falha",
+    "prioridade": "normal",
+    "itens": [{"bloqueado": true}]
+  }
+]

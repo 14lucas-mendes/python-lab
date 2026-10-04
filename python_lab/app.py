@@ -10,7 +10,7 @@ from python_lab.learning import (
     reveal_hint,
     start_mission,
 )
-from python_lab.models import Goal, Mission, MissionProgress, Skill, TestResult
+from python_lab.models import Goal, Mission, MissionProgress, RoadmapCycle, Skill, TestResult
 from python_lab.progress import ProgressRepository
 from python_lab.test_runner import run_tests, solution_fingerprint
 
@@ -27,14 +27,22 @@ class PythonLabApp:
         missions: list[Mission],
         repository: ProgressRepository,
         project_root: Path,
+        roadmap: tuple[RoadmapCycle, ...] = (),
     ) -> None:
         self.goal = goal
         self.skills = skills
         self.missions = missions
         self.repository = repository
         self.project_root = project_root
+        self.roadmap = roadmap
         self.progress = repository.load()
         self._persisted_progress = copy.deepcopy(self.progress)
+
+    def cycle_title(self, cycle: int) -> str:
+        for item in self.roadmap:
+            if item.cycle == cycle:
+                return item.title
+        return f"Ciclo {cycle}"
 
     def persist(self) -> None:
         previous = self._persisted_progress

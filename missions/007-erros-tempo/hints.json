@@ -1,0 +1,7 @@
+[
+  "Antes de rodar uma função, o Python precisa conseguir ler o arquivo. Qual dos três arquivos nem chega a abrir?",
+  "TypeError costuma aparecer quando dois tipos se misturam na hora da conta ou da junção de texto.",
+  "NameError aparece quando o nome usado na linha não é o mesmo nome definido acima.",
+  "Em sintaxe.py falta o dois-pontos do for. Em tipos.py converta o número para texto. Em nomes.py use alertas[0], não alerta[0].",
+  {"type": "reference", "path": "reference_solution"}
+]

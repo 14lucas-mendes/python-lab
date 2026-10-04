@@ -5,6 +5,8 @@
   "summary": "Verificar campos obrigatórios e separar equipamentos válidos dos inconsistentes.",
   "skills": ["json", "collections", "strings_validation", "edge_cases"],
   "prerequisites": ["002"],
+  "cycle": 4,
+  "lesson_id": "lesson_02-arquivos-erros",
   "tests": "tests",
   "solution": "starter.py"
 }

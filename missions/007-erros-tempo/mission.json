@@ -1,0 +1,12 @@
+{
+  "id": "007",
+  "slug": "erros-tempo",
+  "title": "Erros antes e durante a execução",
+  "summary": "Corrigir três módulos quebrados e classificar cada falha como erro de sintaxe ou de execução.",
+  "skills": ["debugging", "exceptions", "ai_code_review"],
+  "prerequisites": ["004"],
+  "cycle": 2,
+  "lesson_id": "lesson_03-testes-git",
+  "tests": "tests",
+  "solution": "starter"
+}

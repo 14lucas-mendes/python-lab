@@ -1,5 +1,7 @@
 # Mission 005 — Gerar relatório operacional
 
+Ciclo 4 · lesson_02-arquivos-erros
+
 Esta missão integra o que você já praticou: ler CSV, validar JSON, tratar exceções e organizar código em módulos. Não há tecnologia nova.
 
 ## Entrada

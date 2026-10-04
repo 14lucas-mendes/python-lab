@@ -75,6 +75,9 @@ def test_missions_show_blocked_status(app):
 
     output = console.export_text()
     assert "002" in output and "bloqueada" in output
+    assert "Ciclo 1" in output
+    assert "Ciclos planejados" in output
+    assert "HTTP e APIs REST" in output
 
 
 def test_exit_stops_the_loop(app):
@@ -220,7 +223,7 @@ def test_aliases_dispatch_to_canonical_commands(app):
     console = Console(record=True, width=120)
     cli = PythonLabCLI(app=app, console=console)
     assert cli.execute("/g") is True
-    assert "Python para automação" in console.export_text()
+    assert "Automação e Integração de Sistemas com Python" in console.export_text()
 
 
 def test_command_without_slash_suggests_canonical(app):

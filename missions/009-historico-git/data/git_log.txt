@@ -1,0 +1,6 @@
+a1b2c3d feat: consolidar falhas
+e4f5g6h fix: guardar lista vazia
+i7j8k9l docs: descrever o plantão
+m0n1o2p ajuste de nomenclatura
+q3r4s5t feat: classificar ordens
+u6v7w8x chore: ignorar cache

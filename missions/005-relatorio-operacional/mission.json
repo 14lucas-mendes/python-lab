@@ -4,7 +4,9 @@
   "title": "Gerar relatório operacional",
   "summary": "Integrar as capacidades anteriores em um programa modular.",
   "skills": ["decomposition", "csv", "json", "exceptions", "pytest", "modules"],
-  "prerequisites": ["001", "002", "003", "004"],
+  "prerequisites": ["002", "003", "004"],
+  "cycle": 4,
+  "lesson_id": "lesson_02-arquivos-erros",
   "tests": "tests",
   "solution": "starter"
 }

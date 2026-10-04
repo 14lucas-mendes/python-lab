@@ -360,6 +360,16 @@ class PythonLabTUI(App[None]):
         current = self.lab.progress.current_mission_id or "nenhuma"
         return f"{self.lab.goal.title} · missão {current}"
 
+    def _cycle_label(self, current_id: str, recommended) -> str:
+        source = None
+        if current_id != "nenhuma":
+            source = self.lab.mission_by_id(current_id)
+        elif recommended is not None:
+            source = recommended
+        if source is None:
+            return "—"
+        return f"{source.cycle} — {self.lab.cycle_title(source.cycle)}"
+
     def _opening_banner(self) -> Group:
         recommended = self.lab.recommended()
         current_id = self.lab.progress.current_mission_id or "nenhuma"
@@ -396,6 +406,7 @@ class PythonLabTUI(App[None]):
                 "Python Lab",
                 [
                     ("Objetivo", self.lab.goal.title),
+                    ("Ciclo", self._cycle_label(current_id, recommended)),
                     ("Missão", mission_label),
                     ("Estado", state),
                     ("Recomendada", recommendation),
