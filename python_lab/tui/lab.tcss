@@ -1,0 +1,140 @@
+$background: #000000;
+$foreground: #e8e8e8;
+$muted: #8a8a8a;
+$accent: #22c55e;
+$border: #d4d4d4;
+
+Screen {
+    background: $background;
+    color: $foreground;
+}
+
+#transcript {
+    height: 1fr;
+    background: $background;
+    color: $foreground;
+    border: none;
+    padding: 1 2;
+    scrollbar-size-vertical: 1;
+    scrollbar-background: $background;
+    scrollbar-color: #3f3f3f;
+}
+
+#palette {
+    display: none;
+    height: auto;
+    max-height: 12;
+    margin: 0 2;
+    padding: 0 1;
+    background: $background;
+    border: solid $border;
+    color: $foreground;
+}
+
+#palette > .option-list--option-highlighted {
+    background: #141414;
+    color: $accent;
+    text-style: none;
+}
+
+#composer-wrap {
+    height: auto;
+    margin: 0 2 1 2;
+    border: solid $border;
+    background: $background;
+}
+
+#composer-row {
+    height: auto;
+    background: $background;
+}
+
+#prompt-mark {
+    width: 6;
+    color: $foreground;
+    text-style: bold;
+    padding: 0 1;
+    content-align: left middle;
+}
+
+#composer {
+    width: 1fr;
+    background: $background;
+    color: $foreground;
+    border: none;
+    padding: 0 1;
+}
+
+#composer:focus {
+    border: none;
+}
+
+#next-step {
+    height: 1;
+    margin: 0 2 1 2;
+    color: $accent;
+    background: $background;
+}
+
+PlanScreen,
+ExplainScreen,
+ConfirmScreen,
+HelpScreen {
+    align: center middle;
+    background: #000000 80%;
+}
+
+#plan-dialog,
+#explain-dialog,
+#confirm-dialog,
+#help-dialog {
+    background: $background;
+    padding: 1 2;
+    border: solid $border;
+    width: 80;
+    max-width: 100%;
+    height: auto;
+    color: $foreground;
+}
+
+#plan-dialog Input,
+#explain-text {
+    background: $background;
+    color: $foreground;
+    border: solid #3f3f3f;
+}
+
+#plan-dialog Input {
+    margin-bottom: 1;
+}
+
+#explain-text {
+    height: 12;
+    margin-bottom: 1;
+}
+
+#dialog-buttons {
+    height: auto;
+    align: right middle;
+}
+
+#dialog-buttons Button {
+    margin-left: 1;
+    background: $background;
+    color: $foreground;
+    border: solid $border;
+}
+
+#dialog-buttons Button.-primary,
+#plan-save,
+#explain-save,
+#help-close {
+    color: $accent;
+    border: solid $accent;
+}
+
+#help-body {
+    height: auto;
+    padding: 1 0;
+    color: $foreground;
+}

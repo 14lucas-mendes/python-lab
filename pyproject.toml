@@ -4,15 +4,25 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "python-lab"
-version = "0.2.0"
+version = "0.3.0"
 requires-python = ">=3.11"
-dependencies = ["rich>=13.7,<15"]
+dependencies = [
+    "rich>=13.7,<15",
+    "textual>=0.80,<1",
+]
 
 [project.optional-dependencies]
 dev = ["pytest>=8,<9"]
 
+[project.scripts]
+lab = "python_lab.cli:main"
+python-lab = "python_lab.cli:main"
+
 [tool.setuptools.packages.find]
 include = ["python_lab*"]
+
+[tool.setuptools.package-data]
+"python_lab.tui" = ["*.tcss"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

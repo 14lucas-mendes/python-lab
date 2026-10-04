@@ -12,6 +12,7 @@ from python_lab.catalog import CatalogError, load_goal, load_missions, load_skil
 from python_lab.learning import CompletionError, HintError, LearningError
 from python_lab.progress import ProgressError, ProgressRepository
 from python_lab.session import SessionError, SessionLog
+from python_lab.tui.app import PythonLabTUI
 
 
 COMMANDS = (
@@ -390,19 +391,28 @@ class PythonLabCLI:
 
 
 def _banner(app: PythonLabApp, console: Console) -> None:
+    from rich import box
+    from rich.table import Table
+
     recommended = app.recommended()
     recommendation = (
         f"{recommended.id} — {recommended.title}" if recommended else "Nenhuma missão elegível"
     )
     current = app.progress.current_mission_id or "nenhuma"
-    body = (
-        f"{app.goal.title}\n\n"
-        f"{app.goal.statement}\n\n"
-        f"Missão atual: {current}\n"
-        f"Recomendada: {recommendation}\n"
-        f"Próximo: {app.next_step()}"
+    table = Table(box=None, show_header=False, pad_edge=False, expand=True, padding=(0, 1))
+    table.add_column(style="dim", min_width=14, max_width=16)
+    table.add_column()
+    table.add_row("Objetivo", app.goal.title)
+    table.add_row("Missão", current)
+    table.add_row("Estado", "RUNNING" if current != "nenhuma" else "READY")
+    table.add_row("Recomendada", recommendation)
+    console.print("lab ~ python-lab")
+    console.print("✓  Goal carregado")
+    console.print("✓  Catálogo de missões")
+    console.print(
+        Panel(table, title=" Python Lab ", title_align="left", box=box.SQUARE, padding=(1, 1))
     )
-    console.print(Panel(body, title="Python Lab"))
+    console.print(f"Próximo: {app.next_step()}", style="green")
 
 
 def build_app(project_root: Path | None = None) -> PythonLabApp:
@@ -427,27 +437,16 @@ def _argument_parser() -> argparse.ArgumentParser:
         prog="python-lab",
         description="Ambiente de prática deliberada em Python.",
     )
-    parser.add_argument("--version", action="version", version="python-lab 0.2.0")
+    parser.add_argument("--version", action="version", version="python-lab 0.3.0")
+    parser.add_argument(
+        "--classic",
+        action="store_true",
+        help="Usar o prompt lab> em vez da TUI em tela cheia.",
+    )
     return parser
 
 
-def main(argv: Sequence[str] | None = None) -> int:
-    args = _argument_parser().parse_args(argv)
-    del args
-    console = Console()
-    if sys.version_info < (3, 11):
-        console.print(
-            "Python Lab requer Python 3.11 ou mais recente.", style="red", markup=False
-        )
-        return 2
-    session_log: SessionLog | None = None
-    try:
-        app = build_app()
-        session_log = SessionLog(app.project_root / "data" / "sessions.json")
-        session_log.start()
-    except (ProgressError, ApplicationError, CatalogError, SessionError) as exc:
-        console.print(str(exc), style="red", markup=False)
-        return 1
+def _run_classic(app: PythonLabApp, session_log: SessionLog | None, console: Console) -> int:
     cli = PythonLabCLI(app=app, console=console, session_log=session_log)
     _banner(app, console)
     try:
@@ -465,3 +464,34 @@ def main(argv: Sequence[str] | None = None) -> int:
             session_log.close("Sessão encerrada")
         console.print("\nProgresso salvo. Até a próxima sessão.")
     return 0
+
+
+def _run_tui(app: PythonLabApp, session_log: SessionLog | None) -> int:
+    try:
+        PythonLabTUI(lab=app, session_log=session_log).run()
+    finally:
+        if session_log is not None and session_log._current is not None:
+            if session_log._current.get("ended_at") is None:
+                session_log.close("Sessão encerrada")
+    return 0
+
+
+def main(argv: Sequence[str] | None = None) -> int:
+    args = _argument_parser().parse_args(argv)
+    console = Console()
+    if sys.version_info < (3, 11):
+        console.print(
+            "Python Lab requer Python 3.11 ou mais recente.", style="red", markup=False
+        )
+        return 2
+    session_log: SessionLog | None = None
+    try:
+        app = build_app()
+        session_log = SessionLog(app.project_root / "data" / "sessions.json")
+        session_log.start()
+    except (ProgressError, ApplicationError, CatalogError, SessionError) as exc:
+        console.print(str(exc), style="red", markup=False)
+        return 1
+    if args.classic:
+        return _run_classic(app, session_log, console)
+    return _run_tui(app, session_log)

@@ -11,6 +11,7 @@ def test_external_help_prints_usage_and_exits(capsys):
     assert exc_info.value.code == 0
     assert "usage:" in captured.out.lower()
     assert "python-lab" in captured.out
+    assert "--classic" in captured.out
 
 
 def test_external_version_prints_version_and_exits(capsys):
@@ -19,7 +20,7 @@ def test_external_version_prints_version_and_exits(capsys):
 
     captured = capsys.readouterr()
     assert exc_info.value.code == 0
-    assert "0.2.0" in captured.out
+    assert "0.3.0" in captured.out
 
 
 def test_external_argument_is_rejected(capsys):
@@ -29,3 +30,37 @@ def test_external_argument_is_rejected(capsys):
     captured = capsys.readouterr()
     assert exc_info.value.code == 2
     assert "argumento inválido" in captured.err.lower()
+
+
+def test_classic_flag_enters_prompt_loop(app, monkeypatch, capsys):
+    monkeypatch.setattr("python_lab.cli.build_app", lambda: app)
+    monkeypatch.setattr(
+        "rich.console.Console.input",
+        lambda self, prompt="": "/exit",
+    )
+
+    assert main(["--classic"]) == 0
+    captured = capsys.readouterr()
+    assert "Progresso salvo" in captured.out
+
+
+def test_default_launches_tui(app, monkeypatch):
+    launched = {}
+
+    class FakeTUI:
+        def __init__(self, lab, session_log=None):
+            launched["lab"] = lab
+            launched["session"] = session_log
+
+        def run(self):
+            launched["ran"] = True
+
+    monkeypatch.setattr("python_lab.cli.build_app", lambda: app)
+    monkeypatch.setattr("python_lab.cli.PythonLabTUI", FakeTUI)
+
+    assert main([]) == 0
+    assert launched.get("ran") is True
+    assert launched["lab"] is app
+    assert launched["session"] is not None
+    assert launched["session"]._current is not None
+    assert launched["session"]._current.get("ended_at") is not None
