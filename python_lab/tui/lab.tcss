@@ -9,21 +9,47 @@ Screen {
     color: $foreground;
 }
 
-#transcript {
+#content {
     height: 1fr;
     background: $background;
     color: $foreground;
     border: none;
-    padding: 1 2;
+    padding: 0 2;
     scrollbar-size-vertical: 1;
     scrollbar-background: $background;
     scrollbar-color: #3f3f3f;
 }
 
+#mission-header {
+    height: auto;
+    max-height: 5;
+    padding: 0 2;
+    color: $foreground;
+    text-style: bold;
+}
+
+#stages, #last-result, #actions {
+    height: auto;
+    padding: 0 2;
+    color: $muted;
+}
+
+#document, #response {
+    height: auto;
+    margin: 0;
+    background: $background;
+    color: $foreground;
+}
+
+#document MarkdownH1, #document MarkdownH2, #document MarkdownH3 {
+    color: $foreground;
+    background: $background;
+}
+
 #palette {
     display: none;
     height: auto;
-    max-height: 12;
+    max-height: 6;
     margin: 0 2;
     padding: 0 1;
     background: $background;
@@ -45,12 +71,12 @@ Screen {
 }
 
 #composer-row {
-    height: auto;
+    height: 1;
     background: $background;
 }
 
 #prompt-mark {
-    width: 6;
+    width: 8;
     color: $foreground;
     text-style: bold;
     padding: 0 1;
@@ -59,6 +85,7 @@ Screen {
 
 #composer {
     width: 1fr;
+    height: 1;
     background: $background;
     color: $foreground;
     border: none;
@@ -70,7 +97,7 @@ Screen {
 }
 
 #next-step {
-    height: 1;
+    height: auto;
     margin: 0 2 1 2;
     color: $accent;
     background: $background;
@@ -94,7 +121,23 @@ HelpScreen {
     width: 80;
     max-width: 100%;
     height: auto;
+    max-height: 95%;
     color: $foreground;
+}
+
+#plan-dialog, #explain-dialog {
+    height: 90%;
+}
+
+#plan-fields, #explain-fields {
+    height: 1fr;
+}
+
+#plan-steps, #plan-risks {
+    height: 5;
+    margin-bottom: 1;
+    background: $background;
+    border: solid #3f3f3f;
 }
 
 #plan-dialog Input,

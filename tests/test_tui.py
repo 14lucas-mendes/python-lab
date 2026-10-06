@@ -52,8 +52,9 @@ def test_tui_shows_banner_next_step_and_composer(app):
     async def scenario(tui, _pilot):
         transcript = _transcript(tui)
         assert "Python Lab" in transcript or "001" in transcript
-        assert "Ciclo" in transcript
-        assert "Lógica, decomposição e Python core" in transcript
+        header = _text(tui.query_one("#mission-header", Static))
+        assert "Ciclo" in header
+        assert "Lógica, decomposição e Python core" in header
         assert "/start" in _text(tui.query_one("#next-step", Static))
         composer = tui.query_one("#composer", Composer)
         assert composer.placeholder == "Digite / para comandos"
@@ -98,8 +99,8 @@ def test_tui_saves_plan_with_accents(app):
         assert isinstance(tui.screen, PlanScreen)
         tui.query_one("#plan-input", Input).value = "dicionários"
         tui.query_one("#plan-output", Input).value = "totais por equipamento"
-        tui.query_one("#plan-steps", Input).value = "acumular e comparar"
-        tui.query_one("#plan-risks", Input).value = "lista vazia"
+        tui.query_one("#plan-steps", TextArea).load_text("acumular e comparar")
+        tui.query_one("#plan-risks", TextArea).load_text("lista vazia")
         await pilot.click("#plan-save")
         await pilot.pause()
         plan = tui.lab.current_progress().plan
@@ -126,6 +127,8 @@ def test_tui_runs_passing_and_failing_tests(app, monkeypatch):
         await _submit(tui, pilot, "/test")
         await _wait_tests(tui, pilot)
         assert "falharam" in _transcript(tui)
+        assert "falha visível" not in _transcript(tui)
+        await _submit(tui, pilot, "/test details")
         assert "falha visível" in _transcript(tui)
         assert tui.last_test_result is not None
         assert tui.last_test_result.passed is False

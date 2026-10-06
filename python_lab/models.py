@@ -30,6 +30,10 @@ class Mission:
     hints: tuple[str, ...]
     cycle: int = 1
     lesson_id: str = ""
+    learning_objectives: tuple[str, ...] = ()
+    reflection_questions: tuple[str, ...] = ()
+    briefing_path: Path | None = None
+    concepts_path: Path | None = None
 
 
 @dataclass(frozen=True)

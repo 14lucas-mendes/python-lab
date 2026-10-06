@@ -37,6 +37,9 @@ class PythonLabApp:
         self.roadmap = roadmap
         self.progress = repository.load()
         self._persisted_progress = copy.deepcopy(self.progress)
+        # Session-only output: never persisted as learner progress.
+        self.last_test_results: dict[str, TestResult] = {}
+        self.last_test_mission_id: str | None = None
 
     def cycle_title(self, cycle: int) -> str:
         for item in self.roadmap:
@@ -63,6 +66,27 @@ class PythonLabApp:
         if not self.progress.current_mission_id:
             raise ApplicationError("Nenhuma missão iniciada")
         return self.mission_by_id(self.progress.current_mission_id)
+
+    def mission_content(self, mission: Mission, concepts: bool = False) -> str:
+        path = mission.concepts_path if concepts else mission.briefing_path
+        label = "Apoio conceitual" if concepts else "Enunciado"
+        if path is None:
+            return f"{label} indisponível para a missão {mission.id}. Consulte o resumo e os arquivos da missão."
+        try:
+            return path.read_text(encoding="utf-8")
+        except UnicodeError:
+            raise ApplicationError(f"{label} com codificação inválida; use UTF-8: {path}")
+        except OSError as exc:
+            raise ApplicationError(f"Não foi possível ler {label.lower()}: {path}: {exc}")
+
+    def last_test_result(self) -> TestResult | None:
+        mission_id = self.progress.current_mission_id or self.last_test_mission_id
+        return self.last_test_results.get(mission_id) if mission_id else None
+
+    def remember_test_result(self, result: TestResult) -> None:
+        mission_id = self.current_mission().id
+        self.last_test_results[mission_id] = result
+        self.last_test_mission_id = mission_id
 
     def current_progress(self) -> MissionProgress:
         mission = self.current_mission()
@@ -107,6 +131,7 @@ class PythonLabApp:
             }
         )
         self.persist()
+        self.remember_test_result(result)
         return result
 
     def next_hint(self, confirm_reference: bool = False) -> str:

@@ -2,7 +2,7 @@
 
 Ambiente pessoal de prática deliberada em Python. O Lab não mede conteúdo consumido: ele registra competências demonstradas por meio de missões com planejamento, testes e explicação final.
 
-A interface padrão é uma TUI no estilo Claude Code: histórico da sessão em cima e um campo de digitação embaixo. O prompt `lab>` continua disponível com `lab --classic`.
+A interface padrão é uma TUI centrada na missão: cabeçalho e etapas persistentes, conteúdo rolável, último resultado, ações da etapa e campo de comandos. O histórico fica acessível por `/session`. O prompt `lab>` continua disponível com `lab --classic`.
 
 ## Tripé
 
@@ -42,11 +42,11 @@ A v0.3 é suportada a partir do checkout do repositório (inclusive pela instala
 
 ## Ciclo de uma sessão
 
-1. `lab` abre a TUI com o objetivo, a missão atual e o próximo passo no rodapé.
-2. Digite `/` para ver os comandos. `/start 001` inicia uma missão desbloqueada.
+1. `lab` abre a TUI com a missão atual e o próximo passo no rodapé. Uma missão em andamento já abre com o enunciado.
+2. Digite `/` para ver os comandos. `/mission 001` consulta o enunciado sem iniciar; `/start 001` inicia uma missão desbloqueada.
 3. `/plan` registra entrada, saída, etapas e possíveis erros.
-4. Edite `starter.py` (ou o pacote em `starter/` na missão 005) no VS Code.
-5. `/test` executa o pytest da missão depois que o planejamento estiver completo.
+4. Edite `starter.py` (ou o pacote em `starter/` na missão 005) no Cursor. O caminho do arquivo editável aparece no enunciado.
+5. `/test` executa o pytest da missão depois que o planejamento estiver completo. A tela mostra resumo e diagnósticos; `/test details` apresenta a saída completa sem executar novamente.
 6. `/hint` libera pistas progressivas depois da primeira execução de testes, se precisar.
 7. `/explain` registra a explicação final quando os testes passam. Se plano, testes e explicação estiverem completos, a missão é concluída na hora, com evidências; se faltar algo, a TUI diz o que está pendente.
 8. A missão só conclui com plano, testes e explicação.
@@ -54,6 +54,22 @@ A v0.3 é suportada a partir do checkout do repositório (inclusive pela instala
 O rodapé mostra `Próximo:` depois de cada ação.
 
 Se você editar a solução depois de uma execução aprovada, rode `/test` novamente antes de `/explain`.
+
+A TUI verifica periodicamente se a solução mudou e atualiza a indicação de testes atuais. O planejamento permite várias linhas nos campos de etapas e riscos. Esc cancela o formulário sem salvar.
+
+## Piloto didático: missões 001 e 006
+
+Essas duas missões incluem objetivo observável, conhecimentos necessários, exemplos de entrada e saída, critérios de aceite e perguntas para a reflexão final. A edição da solução continua no Cursor; o Lab apresenta o problema e registra suas tentativas.
+
+Use `/concepts` para revisar conceitos da missão atual ou `/concepts 001` para consultar outra missão. O apoio é opcional, pode ser lido antes de testar e não contabiliza uma pista. `/mission` retoma o enunciado. Sem missão atual, informe um ID; consultar uma missão bloqueada não a inicia nem a desbloqueia.
+
+As perguntas de reflexão aparecem no `/explain`, que continua recebendo uma resposta textual única. As regras de conclusão, pistas e evidências permanecem as mesmas. Os detalhes dos testes ficam apenas na memória da sessão, separados por missão; ao fechar o Lab, a saída completa deixa de estar disponível.
+
+### Conteúdo opcional para autores
+
+`mission.json` aceita `learning_objectives` e `reflection_questions`, listas opcionais de textos não vazios. O catálogo encontra o enunciado em `README.md` e o apoio em `concepts.md`, na pasta da missão. Conteúdo ausente recebe uma mensagem explicativa e não impede carregar missões antigas.
+
+O piloto deve ser observado em sessões reais antes de aplicar esse padrão às outras missões. Verifique se o aluno encontra o contrato e o arquivo editável, consulta apoio sem se perder e explica as decisões da solução. Testes aprovados verificam funcionamento técnico, não eficácia didática.
 
 No relatório CSV, linhas sem identificador de equipamento são consideradas inválidas.
 
@@ -66,6 +82,7 @@ O campo de baixo aceita os mesmos comandos com barra da CLI. Digite `/` para fil
 | `/` | Abrir e filtrar a lista de comandos |
 | `Enter` | Executar o comando ou escolher o item do menu |
 | `Esc` | Fechar o menu ou limpar o campo |
+| `PageUp` / `PageDown` | Rolar o conteúdo mantendo o campo de comandos ativo |
 | `q` | Sair, se o campo estiver vazio |
 | `Ctrl+C` | Salvar e encerrar |
 
@@ -81,8 +98,11 @@ A TUI lê os campos de texto em Unicode, então acentos no plano e na explicaç�
 | `/skills` | `/sk` | Exibir mapa de competências e evidências |
 | `/missions` | `/ms` | Listar missões e estados |
 | `/start <id>` | | Iniciar ou repetir uma missão desbloqueada |
+| `/mission [id]` | | Consultar o enunciado sem iniciar a missão |
+| `/concepts [id]` | | Consultar apoio conceitual opcional |
 | `/plan` | `/p` | Registrar ou revisar o planejamento |
 | `/test` | `/t` | Executar os testes da missão atual |
+| `/test details` | | Exibir a saída completa sem nova tentativa |
 | `/hint` | `/h` | Liberar a próxima pista |
 | `/explain` | `/e` | Registrar a explicação final |
 | `/status` | `/st` | Exibir estado da sessão |

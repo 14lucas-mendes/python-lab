@@ -35,7 +35,7 @@ def cycle_progress(lab: PythonLabApp) -> tuple[int, int]:
     plan = progress.plan or {}
     if all(str(plan.get(key, "")).strip() for key in PLAN_KEYS):
         done += 1
-    if progress.tests_passed:
+    if lab.tests_are_current():
         done += 1
     if progress.explanation:
         done += 1
@@ -52,12 +52,11 @@ class CommandPalette(OptionList, can_focus=False):
         needle = text.lower()
         options: list[Option] = []
         for command, shortcut, description in commands:
-            token = command.split()[0]
             haystack = f"{command} {shortcut}".lower()
             if needle != "/" and not haystack.startswith(needle) and needle not in haystack:
                 continue
-            needs_arg = "<" in command
-            slug = token.lstrip("/").replace("?", "help")
+            needs_arg = "<" in command or "[" in command
+            slug = command.split(" [", 1)[0].split(" <", 1)[0].lstrip("/").replace("?", "help")
             option_id = f"{'need' if needs_arg else 'run'}-{slug}"
             label = f"{command}  {description}"
             options.append(Option(label, id=option_id))
@@ -82,6 +81,11 @@ class CommandPalette(OptionList, can_focus=False):
 
 class Composer(Input):
     def on_key(self, event: events.Key) -> None:
+        if event.key in {"pageup", "pagedown"}:
+            event.prevent_default()
+            event.stop()
+            self.app.scroll_content(down=event.key == "pagedown")
+            return
         if event.key == "ctrl+c":
             event.prevent_default()
             event.stop()

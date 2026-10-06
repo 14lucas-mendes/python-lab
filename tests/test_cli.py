@@ -145,6 +145,7 @@ def test_test_output_survives_unencodable_characters(app, monkeypatch):
     )
 
     assert cli.execute("/test") is True
+    assert cli.execute("/test details") is True
     assert "erro" in console.export_text()
 
 
@@ -160,6 +161,7 @@ def test_test_output_treats_student_text_as_literal(app, monkeypatch):
     )
 
     assert cli.execute("/test") is True
+    assert cli.execute("/test details") is True
     assert "ValueError: [/audit]" in console.export_text()
 
 
