@@ -121,7 +121,7 @@ def test_tui_runs_passing_and_failing_tests(app, monkeypatch):
             RunnerResult(True, 0, "===== 1 passed =====", summary="1 teste(s): 1 aprovado(s)"),
         ]
     )
-    monkeypatch.setattr(app, "run_current_tests", lambda: next(results))
+    monkeypatch.setattr("python_lab.app.run_tests", lambda *args: next(results))
 
     async def scenario(tui, pilot):
         await _submit(tui, pilot, "/test")
@@ -130,14 +130,14 @@ def test_tui_runs_passing_and_failing_tests(app, monkeypatch):
         assert "falha visível" not in _transcript(tui)
         await _submit(tui, pilot, "/test details")
         assert "falha visível" in _transcript(tui)
-        assert tui.last_test_result is not None
-        assert tui.last_test_result.passed is False
+        assert app.last_test_result() is not None
+        assert app.last_test_result().passed is False
 
         await _submit(tui, pilot, "/test")
         await _wait_tests(tui, pilot)
         assert "passaram" in _transcript(tui)
-        assert tui.last_test_result is not None
-        assert tui.last_test_result.passed is True
+        assert app.last_test_result() is not None
+        assert app.last_test_result().passed is True
 
     _drive(app, scenario)
 

@@ -113,10 +113,13 @@ class PythonLabApp:
             key in progress.plan and str(progress.plan[key]).strip() for key in PLAN_KEYS
         ):
             raise ApplicationError("Planejamento incompleto: registre /plan antes de testar")
-        progress.attempts += 1
         chosen = solution_path or mission.solution_path
-        chosen_path = Path(chosen).resolve()
-        fingerprint = solution_fingerprint(chosen_path)
+        try:
+            chosen_path = Path(chosen).resolve()
+            fingerprint = solution_fingerprint(chosen_path)
+        except OSError as exc:
+            raise ApplicationError("Não foi possível ler a solução; tente novamente") from exc
+        progress.attempts += 1
         result = run_tests(mission.test_path, self.project_root, chosen)
         progress.tests_passed = result.passed
         progress.tested_solution_path = str(chosen_path)
@@ -147,7 +150,12 @@ class PythonLabApp:
         progress = self.current_progress()
         if not progress.tests_passed or not progress.tested_solution_path:
             return False
-        current_fingerprint = solution_fingerprint(Path(progress.tested_solution_path))
+        try:
+            current_fingerprint = solution_fingerprint(Path(progress.tested_solution_path))
+        except OSError:
+            # Editors can replace or temporarily lock files while the TUI refreshes.
+            # An unreadable solution cannot establish that the approval is current.
+            return False
         return (
             progress.tested_solution_fingerprint is not None
             and current_fingerprint == progress.tested_solution_fingerprint

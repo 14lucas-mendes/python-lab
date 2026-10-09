@@ -1,3 +1,4 @@
+from dataclasses import replace
 from pathlib import Path
 from shutil import copytree, copyfile
 
@@ -32,3 +33,21 @@ def app(tmp_path):
         project_root=tmp_path,
         roadmap=load_roadmap(data_dir / "roadmap.json", missions),
     )
+
+
+@pytest.fixture
+def add_teaching_content(app):
+    def add():
+        folder = app.missions[0].test_path.parent
+        briefing = folder / "README.md"
+        concepts = folder / "concepts.md"
+        briefing.write_text("# Desafio\n\n## Entrada\n\nLista de registros.\n", encoding="utf-8")
+        concepts.write_text("# Conceitos\n\nAcumulação com dicionários.\n", encoding="utf-8")
+        app.missions[0] = replace(
+            app.missions[0],
+            briefing_path=briefing,
+            concepts_path=concepts,
+            learning_objectives=("Agrupar registros.",),
+            reflection_questions=("Como você resolve um empate?",),
+        )
+    return add

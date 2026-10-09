@@ -6,7 +6,8 @@
   "learning_objectives": ["Ordenar condições por precedência e verificar a existência de itens antes de acessar a lista."],
   "reflection_questions": [
     "Por que um item bloqueado prevalece sobre uma falha urgente?",
-    "Por que verificar a lista antes de acessar o primeiro item? O que mudaria se a falha genérica viesse antes da emergência?"
+    "Por que verificar a lista antes de acessar o primeiro item?",
+    "O que mudaria se a falha genérica viesse antes da emergência?"
   ],
   "skills": ["functions", "edge_cases", "decomposition"],
   "prerequisites": ["001"],
