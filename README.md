@@ -131,6 +131,6 @@ As alterações do projeto seguem este fluxo:
 1. Criar uma nova branch a partir da `main` atualizada.
 2. Implementar e validar as mudanças, preservando o progresso e as soluções locais do aluno.
 3. Fazer commit, enviar a branch e abrir uma PR contra `main`, com escopo e resultados da validação.
-4. Para correções solicitadas em uma revisão, usar uma nova branch e uma nova PR, referenciando os comentários atendidos.
+4. Para correções em uma PR ainda aberta, atualizar sua branch e os resultados da validação, referenciando os comentários atendidos. Após a integração, ou para mudanças independentes, usar uma nova branch e uma nova PR.
 
 Não enviar alterações diretamente para `main`. A integração acontece após a revisão da PR.

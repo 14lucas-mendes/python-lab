@@ -113,10 +113,13 @@ class PythonLabApp:
             key in progress.plan and str(progress.plan[key]).strip() for key in PLAN_KEYS
         ):
             raise ApplicationError("Planejamento incompleto: registre /plan antes de testar")
-        progress.attempts += 1
         chosen = solution_path or mission.solution_path
-        chosen_path = Path(chosen).resolve()
-        fingerprint = solution_fingerprint(chosen_path)
+        try:
+            chosen_path = Path(chosen).resolve()
+            fingerprint = solution_fingerprint(chosen_path)
+        except OSError as exc:
+            raise ApplicationError("Não foi possível ler a solução; tente novamente") from exc
+        progress.attempts += 1
         result = run_tests(mission.test_path, self.project_root, chosen)
         progress.tests_passed = result.passed
         progress.tested_solution_path = str(chosen_path)

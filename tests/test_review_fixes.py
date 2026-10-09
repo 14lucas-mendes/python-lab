@@ -8,12 +8,11 @@ from textual.widgets import Static, TextArea
 from python_lab.catalog import load_missions
 from python_lab.cli import PythonLabCLI
 from python_lab.learning import CompletionError
+from python_lab.models import TestResult as RunnerResult
 from python_lab.session import SessionLog
 from python_lab.test_runner import solution_fingerprint
 from python_lab.tui.app import PythonLabTUI
 from python_lab.tui.screens import ExplainScreen, PlanScreen
-
-from test_didactic_pilot import _content
 
 
 def _approved_solution(app, tmp_path):
@@ -25,6 +24,43 @@ def _approved_solution(app, tmp_path):
     progress.tests_passed = True
     progress.tested_solution_path = str(solution)
     progress.tested_solution_fingerprint = solution_fingerprint(solution)
+
+
+@pytest.mark.parametrize("error_type", [PermissionError, FileNotFoundError, OSError])
+def test_test_read_error_does_not_count_attempt_and_can_retry(app, monkeypatch, error_type):
+    app.start("001")
+    plan = {"input": "x", "output": "y", "steps": "z", "risks": "w"}
+    app.save_plan(plan)
+    console = Console(record=True, width=120)
+    cli = PythonLabCLI(app, console)
+
+    def unreadable(_path):
+        raise error_type("Arquivo em uso pelo editor")
+
+    def unexpected_run(*args):
+        pytest.fail("Os testes não devem executar se a solução não pôde ser lida")
+
+    with monkeypatch.context() as patch:
+        patch.setattr("python_lab.app.solution_fingerprint", unreadable)
+        patch.setattr("python_lab.app.run_tests", unexpected_run)
+        assert cli.execute("/test") is True
+    output = console.export_text()
+    assert "Não foi possível ler a solução" in output
+    assert "tente novamente" in output
+    assert app.current_progress().attempts == 0
+    assert app.current_progress().attempt_history == []
+    assert app.last_test_result() is None
+    # A later save must not persist an attempt that never ran.
+    app.save_plan(plan)
+    stored = app.repository.load().missions["001"]
+    assert stored.attempts == 0
+    assert stored.attempt_history == []
+
+    monkeypatch.setattr("python_lab.app.run_tests", lambda *args: RunnerResult(True, 0, "Teste aprovado"))
+    assert cli.execute("/test") is True
+    assert app.current_progress().attempts == 1
+    assert len(app.current_progress().attempt_history) == 1
+    assert app.last_test_result().passed is True
 
 
 @pytest.mark.parametrize("error_type", [PermissionError, FileNotFoundError, OSError])
@@ -68,7 +104,7 @@ def test_refresh_read_error_preserves_open_form_and_recovers(app, tmp_path, monk
                 patch.setattr("python_lab.app.solution_fingerprint", unreadable)
                 tui._refresh_status()
                 await pilot.pause()
-                assert not tui._exit
+                assert tui.is_running
                 assert isinstance(tui.screen, screen_type)
                 assert field.text == "Texto ainda não salvo\nCom acentuação"
                 assert "[ ] Testes atuais" in str(tui.screen_stack[0].query_one("#stages", Static).renderable)
@@ -83,8 +119,8 @@ def test_refresh_read_error_preserves_open_form_and_recovers(app, tmp_path, monk
 
 
 @pytest.mark.parametrize("unreadable", ["encoding", "missing"])
-def test_start_with_unreadable_briefing_records_success_and_warning(app, unreadable):
-    _content(app)
+def test_start_with_unreadable_briefing_records_success_and_warning(app, unreadable, add_teaching_content):
+    add_teaching_content()
     briefing = app.missions[0].briefing_path
     if unreadable == "encoding":
         briefing.write_bytes(b"\xff")

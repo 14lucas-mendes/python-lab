@@ -19,21 +19,6 @@ from python_lab.tui.screens import ExplainScreen, PlanScreen
 from python_lab.tui.widgets import Composer, cycle_progress
 
 
-def _content(app):
-    folder = app.missions[0].test_path.parent
-    briefing = folder / "README.md"
-    concepts = folder / "concepts.md"
-    briefing.write_text("# Desafio\n\n## Entrada\n\nLista de registros.\n", encoding="utf-8")
-    concepts.write_text("# Conceitos\n\nAcumulação com dicionários.\n", encoding="utf-8")
-    app.missions[0] = replace(
-        app.missions[0],
-        briefing_path=briefing,
-        concepts_path=concepts,
-        learning_objectives=("Agrupar registros.",),
-        reflection_questions=("Como você resolve um empate?",),
-    )
-
-
 def _cli(app):
     buffer = StringIO()
     return PythonLabCLI(app, Console(file=buffer, record=True, width=120)), buffer
@@ -81,8 +66,8 @@ def test_catalog_rejects_invalid_teaching_metadata(app, field, value):
         load_missions(folder.parent)
 
 
-def test_reading_briefing_and_concepts_is_read_only_even_when_blocked(app):
-    _content(app)
+def test_reading_briefing_and_concepts_is_read_only_even_when_blocked(app, add_teaching_content):
+    add_teaching_content()
     app.missions[0] = replace(app.missions[0], prerequisites=("999",))
     before = copy.deepcopy(app.progress)
     seed = app.repository.path.read_bytes()
@@ -104,20 +89,20 @@ def test_content_commands_without_current_mission_guide_selection(app):
     assert app.progress.current_mission_id is None
 
 
-def test_legacy_missing_content_and_unreadable_optional_content_are_actionable(app):
+def test_legacy_missing_content_and_unreadable_optional_content_are_actionable(app, add_teaching_content):
     cli, buffer = _cli(app)
     cli.execute("/mission 001")
     cli.execute("/concepts 001")
     assert "Enunciado indisponível" in buffer.getvalue()
     assert "Apoio conceitual indisponível" in buffer.getvalue()
-    _content(app)
+    add_teaching_content()
     app.missions[0].concepts_path.write_bytes(b"\xff")
     cli.execute("/concepts 001")
     assert "UTF-8" in buffer.getvalue()
 
 
-def test_start_presents_briefing_and_explain_presents_reflection(app):
-    _content(app)
+def test_start_presents_briefing_and_explain_presents_reflection(app, add_teaching_content):
+    add_teaching_content()
     cli, buffer = _cli(app)
     cli.execute("/start 001")
     assert "Lista de registros" in buffer.getvalue()
@@ -169,8 +154,8 @@ def test_stage_progress_detects_solution_edited_after_passing(app, tmp_path):
 
 
 @pytest.mark.parametrize("size", [(80, 24), (120, 40)])
-def test_tui_content_multiline_plan_cancel_and_keyboard_navigation(app, size):
-    _content(app)
+def test_tui_content_multiline_plan_cancel_and_keyboard_navigation(app, size, add_teaching_content):
+    add_teaching_content()
 
     async def scenario(tui, pilot):
         await _submit(tui, pilot, "/start 001")
@@ -246,8 +231,8 @@ def test_tui_test_details_does_not_launch_a_second_worker(app, monkeypatch):
     _run_tui(app, scenario)
 
 
-def test_tui_long_content_scrolls_from_composer_and_survives_resize(app):
-    _content(app)
+def test_tui_long_content_scrolls_from_composer_and_survives_resize(app, add_teaching_content):
+    add_teaching_content()
     app.missions[0].briefing_path.write_text(
         "# Enunciado\n\n" + "\n\n".join(f"Etapa {i}: comparação e validação." for i in range(80)),
         encoding="utf-8",
@@ -275,8 +260,8 @@ def test_tui_long_content_scrolls_from_composer_and_survives_resize(app):
     _run_tui(app, scenario)
 
 
-def test_tui_resumes_with_unreadable_briefing_without_crashing(app):
-    _content(app)
+def test_tui_resumes_with_unreadable_briefing_without_crashing(app, add_teaching_content):
+    add_teaching_content()
     app.start("001")
     app.missions[0].briefing_path.write_bytes(b"\xff")
 
