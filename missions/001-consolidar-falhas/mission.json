@@ -3,6 +3,11 @@
   "slug": "consolidar-falhas",
   "title": "Consolidar falhas",
   "summary": "Somar indisponibilidade por equipamento e identificar o mais crítico.",
+  "learning_objectives": ["Agrupar registros em um dicionário e justificar como selecionar o maior total, incluindo empates e lista vazia."],
+  "reflection_questions": [
+    "Como você acumula registros repetidos sem perder os valores anteriores?",
+    "Como sua solução resolve empates e trata a lista vazia?"
+  ],
   "skills": ["functions", "collections", "decomposition", "problem_understanding"],
   "prerequisites": [],
   "cycle": 1,

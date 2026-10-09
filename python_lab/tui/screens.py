@@ -1,6 +1,6 @@
 from textual.app import ComposeResult
 from textual.binding import Binding
-from textual.containers import Horizontal, Vertical
+from textual.containers import Horizontal, Vertical, VerticalScroll
 from textual.screen import ModalScreen
 from textual.widgets import Button, Input, Label, Static, TextArea
 
@@ -18,14 +18,18 @@ HELP_TEXT = """\
 Digite / para abrir a lista de comandos.
 
 /start <id>  Iniciar uma missão
+/mission [id] Consultar o enunciado
+/concepts [id] Apoio conceitual opcional
 /plan        Registrar o planejamento
 /test        Executar os testes
+/test details Saída completa sem nova tentativa
 /hint        Liberar a próxima pista
 /explain     Registrar a explicação e concluir
 /help        Mostrar esta ajuda
 /exit        Salvar e encerrar
 
 Esc fecha o menu ou limpa o campo.
+PageUp / PageDown percorrem o conteúdo sem sair do campo.
 q (campo vazio) ou Ctrl+C encerra a sessão.
 A pista 5 (solução de referência) pede confirmação.
 """
@@ -43,9 +47,13 @@ class PlanScreen(ModalScreen[dict[str, str] | None]):
     def compose(self) -> ComposeResult:
         with Vertical(id="plan-dialog"):
             yield Label("Planejamento")
-            for key in PLAN_KEYS:
-                yield Label(PLAN_LABELS[key])
-                yield Input(self._plan.get(key, ""), id=f"plan-{key}")
+            with VerticalScroll(id="plan-fields"):
+                for key in PLAN_KEYS:
+                    yield Label(PLAN_LABELS[key])
+                    if key in {"steps", "risks"}:
+                        yield TextArea(self._plan.get(key, ""), id=f"plan-{key}")
+                    else:
+                        yield Input(self._plan.get(key, ""), id=f"plan-{key}")
             with Horizontal(id="dialog-buttons"):
                 yield Button("Salvar", variant="primary", id="plan-save")
                 yield Button("Cancelar", id="plan-cancel")
@@ -57,7 +65,11 @@ class PlanScreen(ModalScreen[dict[str, str] | None]):
         if event.button.id == "plan-save":
             self.dismiss(
                 {
-                    key: self.query_one(f"#plan-{key}", Input).value
+                    key: (
+                        self.query_one(f"#plan-{key}", TextArea).text
+                        if key in {"steps", "risks"}
+                        else self.query_one(f"#plan-{key}", Input).value
+                    )
                     for key in PLAN_KEYS
                 }
             )
@@ -73,10 +85,21 @@ class ExplainScreen(ModalScreen[str | None]):
         Binding("escape", "cancel", "Cancelar", show=False),
     ]
 
+    def __init__(self, questions: tuple[str, ...] = (), explanation: str = "") -> None:
+        super().__init__()
+        self._questions = questions
+        self._explanation = explanation
+
     def compose(self) -> ComposeResult:
         with Vertical(id="explain-dialog"):
             yield Label("Explicação final")
-            yield TextArea(id="explain-text")
+            with VerticalScroll(id="explain-fields"):
+                yield Static(
+                    "\n".join(f"- {question}" for question in self._questions)
+                    or "Explique suas decisões e como verificou os casos extremos.",
+                    id="reflection", markup=False,
+                )
+                yield TextArea(self._explanation, id="explain-text")
             with Horizontal(id="dialog-buttons"):
                 yield Button("Concluir", variant="primary", id="explain-save")
                 yield Button("Cancelar", id="explain-cancel")

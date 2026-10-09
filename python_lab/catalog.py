@@ -105,6 +105,10 @@ def _load_mission(mission_path: Path) -> Mission:
     folder_slug = mission_dir.name.split("-", 1)[1] if "-" in mission_dir.name else mission_dir.name
     tests = _text(_require(payload, "tests", mission_path), "tests", mission_path)
     solution = _text(_require(payload, "solution", mission_path), "solution", mission_path)
+    teaching: dict[str, tuple[str, ...]] = {}
+    for field in ("learning_objectives", "reflection_questions"):
+        values = _as_tuple(payload.get(field, []), field, mission_path)
+        teaching[field] = tuple(_text(value, field, mission_path) for value in values)
     return Mission(
         id=_text(_require(payload, "id", mission_path), "id", mission_path),
         slug=_text(payload.get("slug", folder_slug), "slug", mission_path),
@@ -117,6 +121,10 @@ def _load_mission(mission_path: Path) -> Mission:
         hints=_load_hints(mission_dir),
         cycle=_cycle_number(_require(payload, "cycle", mission_path), mission_path),
         lesson_id=_text(_require(payload, "lesson_id", mission_path), "lesson_id", mission_path),
+        learning_objectives=teaching["learning_objectives"],
+        reflection_questions=teaching["reflection_questions"],
+        briefing_path=(mission_dir / "README.md").resolve() if (mission_dir / "README.md").is_file() else None,
+        concepts_path=(mission_dir / "concepts.md").resolve() if (mission_dir / "concepts.md").is_file() else None,
     )
 
 

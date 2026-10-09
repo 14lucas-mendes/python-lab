@@ -4,6 +4,7 @@ from pathlib import Path
 from typing import Sequence
 
 from rich.console import Console
+from rich.markdown import Markdown
 from rich.panel import Panel
 from rich.table import Table
 
@@ -11,6 +12,7 @@ from python_lab.app import ApplicationError, PythonLabApp
 from python_lab.catalog import CatalogError, load_goal, load_missions, load_roadmap, load_skills
 from python_lab.learning import CompletionError, HintError, LearningError
 from python_lab.progress import ProgressError, ProgressRepository
+from python_lab.presentation import test_feedback
 from python_lab.session import SessionError, SessionLog
 from python_lab.tui.app import PythonLabTUI
 
@@ -20,8 +22,11 @@ COMMANDS = (
     ("/skills", "/sk", "Exibir mapa de competências e evidências"),
     ("/missions", "/ms", "Listar missões e estados"),
     ("/start <id>", "", "Iniciar ou repetir uma missão desbloqueada"),
+    ("/mission [id]", "", "Consultar o enunciado sem iniciar a missão"),
+    ("/concepts [id]", "", "Consultar apoio conceitual opcional"),
     ("/plan", "/p", "Registrar ou revisar o planejamento"),
     ("/test", "/t", "Executar os testes da missão atual"),
+    ("/test details", "", "Consultar a saída completa sem nova tentativa"),
     ("/hint", "/h", "Liberar a próxima pista"),
     ("/explain", "/e", "Registrar a explicação final"),
     ("/status", "/st", "Exibir estado da sessão"),
@@ -52,6 +57,8 @@ DEFAULT_SUMMARIES = {
     "/goal": "Goal exibido",
     "/skills": "Skills exibidas",
     "/missions": "Missões listadas",
+    "/mission": "Enunciado consultado",
+    "/concepts": "Apoio conceitual consultado",
     "/plan": "Planejamento registrado",
     "/hint": "Pista liberada",
     "/status": "Status exibido",
@@ -98,6 +105,8 @@ class PythonLabCLI:
             "/skills": self.show_skills,
             "/missions": self.show_missions,
             "/start": self.start,
+            "/mission": self.show_mission,
+            "/concepts": self.show_concepts,
             "/plan": self.plan,
             "/test": self.test,
             "/hint": self.hint,
@@ -230,7 +239,26 @@ class PythonLabCLI:
         self.console.print(f"Resumo: {mission.summary}")
         self.console.print(f"Leia o enunciado em: {mission.test_path.parent / 'README.md'}")
         self.console.print(f"Edite a solução em: {mission.solution_path}")
+        self.console.print(Markdown(self.app.mission_content(mission)))
         return True
+
+    def _show_content(self, argument: str, concepts: bool) -> bool:
+        mission_id = argument.strip() or self.app.progress.current_mission_id
+        command = "/concepts" if concepts else "/mission"
+        if not mission_id:
+            self.console.print(f"Nenhuma missão iniciada. Use {command} <id> ou escolha com /missions.")
+            return True
+        mission = self.app.mission_by_id(mission_id)
+        self.console.print(f"Missão {mission.id} — {mission.title}", markup=False)
+        self.console.print(f"Edite a solução em: {mission.solution_path}", markup=False)
+        self.console.print(Markdown(self.app.mission_content(mission, concepts=concepts)))
+        return True
+
+    def show_mission(self, argument: str = "") -> bool:
+        return self._show_content(argument, concepts=False)
+
+    def show_concepts(self, argument: str = "") -> bool:
+        return self._show_content(argument, concepts=True)
 
     def plan(self, _argument: str = "") -> bool:
         self.app.current_mission()
@@ -250,22 +278,24 @@ class PythonLabCLI:
         self.console.print(Panel(body, title="Planejamento"))
         return True
 
-    def test(self, _argument: str = "") -> bool:
-        result = self.app.run_current_tests()
-        style = "green" if result.passed else "red"
-        status = "passaram" if result.passed else "falharam"
-        self._last_summary = "Testes passaram" if result.passed else "Testes falharam"
-        self.console.print(f"[{style}]Testes {status} (código {result.return_code})[/{style}]")
-        if result.summary:
-            self.console.print(f"Resumo: {self._printable(result.summary)}", markup=False)
-        if result.passed:
+    def test(self, argument: str = "") -> bool:
+        argument = argument.strip().lower()
+        if argument == "details":
+            result = self.app.last_test_result()
+            self._last_summary = "Detalhes dos testes consultados"
+            if result is None:
+                self.console.print("Nenhum resultado de testes nesta sessão para a missão. Execute /test.")
+            else:
+                self.console.print(self._printable(test_feedback(result, details=True)), markup=False)
             return True
-        if result.diagnostics:
-            self.console.print("Diagnóstico:", markup=False)
-            for item in result.diagnostics[:5]:
-                self.console.print(f"- {self._printable(item)}", markup=False)
-        if result.output.strip():
-            self.console.print(self._printable(result.output), markup=False)
+        if argument:
+            self.console.print("Uso: /test ou /test details")
+            self._last_summary = "Argumento de /test inválido"
+            return True
+        result = self.app.run_current_tests()
+        self.app.remember_test_result(result)
+        self._last_summary = "Testes passaram" if result.passed else "Testes falharam"
+        self.console.print(self._printable(test_feedback(result)), markup=False)
         return True
 
     def hint(self, argument: str = "") -> bool:
@@ -284,6 +314,8 @@ class PythonLabCLI:
         return True
 
     def explain(self, argument: str = "") -> bool:
+        for question in self.app.current_mission().reflection_questions:
+            self.console.print(f"- {question}", markup=False)
         text = argument.strip() or self.console.input("Explicação final: ").strip()
         self.app.save_explanation(text)
         try:
@@ -419,7 +451,7 @@ def _banner(app: PythonLabApp, console: Console) -> None:
     table.add_column()
     table.add_row("Objetivo", app.goal.title)
     table.add_row("Missão", current)
-    table.add_row("Estado", "RUNNING" if current != "nenhuma" else "READY")
+    table.add_row("Estado", "Em andamento" if current != "nenhuma" else "Pronto para iniciar")
     table.add_row("Recomendada", recommendation)
     console.print("lab ~ python-lab")
     console.print("✓  Goal carregado")
