@@ -45,7 +45,6 @@ class PythonLabTUI(App[None]):
             legacy_windows=False,
         )
         self.cli = PythonLabCLI(app=lab, console=self.output_console, session_log=session_log)
-        self.last_test_result: TestResult | None = None
         self.transcript_entries: list[str] = []
         self._testing = False
         self._status_timer = None
@@ -345,8 +344,6 @@ class PythonLabTUI(App[None]):
             self._refresh_status()
             return
         assert result is not None
-        self.last_test_result = result
-        self.lab.remember_test_result(result)
         output = self._format_test_result(result)
         self._append_response(output)
         summary = "Testes passaram" if result.passed else "Testes falharam"

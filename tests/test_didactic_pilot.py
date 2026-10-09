@@ -221,7 +221,8 @@ def test_tui_refreshes_stale_tests_without_a_command(app, tmp_path):
     async def scenario(tui, pilot):
         assert "[x] Testes atuais" in str(tui.query_one("#stages", Static).renderable)
         solution.write_text("x = 2", encoding="utf-8")
-        await pilot.pause(1.2)
+        tui._refresh_status()
+        await pilot.pause()
         assert "[ ] Testes atuais" in str(tui.query_one("#stages", Static).renderable)
         assert "/test" in str(tui.query_one("#actions", Static).renderable)
 

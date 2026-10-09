@@ -147,7 +147,12 @@ class PythonLabApp:
         progress = self.current_progress()
         if not progress.tests_passed or not progress.tested_solution_path:
             return False
-        current_fingerprint = solution_fingerprint(Path(progress.tested_solution_path))
+        try:
+            current_fingerprint = solution_fingerprint(Path(progress.tested_solution_path))
+        except OSError:
+            # Editors can replace or temporarily lock files while the TUI refreshes.
+            # An unreadable solution cannot establish that the approval is current.
+            return False
         return (
             progress.tested_solution_fingerprint is not None
             and current_fingerprint == progress.tested_solution_fingerprint

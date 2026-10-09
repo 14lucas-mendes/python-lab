@@ -123,3 +123,14 @@ As soluções de referência ficam em cada pasta de missão (`reference_solution
 O progresso fica em `data/progress.json`, gravado de forma atômica. O histórico de sessões fica em `data/sessions.json`. Não faça commit do progresso real nem do histórico de sessões: o arquivo versionado de progresso é só o seed vazio, e `data/sessions.json` está no `.gitignore`.
 
 Para ajuda fora da sessão, use `lab --help`. O ambiente suportado é Python 3.11 ou mais recente; pytest é instalado pelo extra `dev` e é necessário para executar as missões.
+
+## Fluxo de contribuições
+
+As alterações do projeto seguem este fluxo:
+
+1. Criar uma nova branch a partir da `main` atualizada.
+2. Implementar e validar as mudanças, preservando o progresso e as soluções locais do aluno.
+3. Fazer commit, enviar a branch e abrir uma PR contra `main`, com escopo e resultados da validação.
+4. Para correções solicitadas em uma revisão, usar uma nova branch e uma nova PR, referenciando os comentários atendidos.
+
+Não enviar alterações diretamente para `main`. A integração acontece após a revisão da PR.

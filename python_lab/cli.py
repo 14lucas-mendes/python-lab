@@ -239,7 +239,12 @@ class PythonLabCLI:
         self.console.print(f"Resumo: {mission.summary}")
         self.console.print(f"Leia o enunciado em: {mission.test_path.parent / 'README.md'}")
         self.console.print(f"Edite a solução em: {mission.solution_path}")
-        self.console.print(Markdown(self.app.mission_content(mission)))
+        try:
+            content = self.app.mission_content(mission)
+        except ApplicationError as exc:
+            self.console.print(f"Aviso: {exc}", style="yellow", markup=False)
+        else:
+            self.console.print(Markdown(content))
         return True
 
     def _show_content(self, argument: str, concepts: bool) -> bool:
@@ -293,7 +298,6 @@ class PythonLabCLI:
             self._last_summary = "Argumento de /test inválido"
             return True
         result = self.app.run_current_tests()
-        self.app.remember_test_result(result)
         self._last_summary = "Testes passaram" if result.passed else "Testes falharam"
         self.console.print(self._printable(test_feedback(result)), markup=False)
         return True
