@@ -282,3 +282,97 @@ def test_session_records_commands_and_lists_previous(app):
     cli = PythonLabCLI(app=app, console=console, session_log=current)
     cli.execute("/session all")
     assert "Sessões anteriores" in console.export_text()
+
+
+def test_log_failure_keeps_cli_alive(app, monkeypatch):
+    from python_lab.session import SessionError
+
+    log = SessionLog(app.repository.path)
+    log.start()
+    def fail(*args):
+        raise SessionError("histórico indisponível")
+    monkeypatch.setattr(log, "record", fail)
+    console = Console(record=True, width=120)
+    cli = PythonLabCLI(app, console, log)
+    assert cli.execute("/status") is True
+    assert cli.execute("/unknown") is True
+    output = console.export_text()
+    assert "histórico indisponível" in output
+    assert "Traceback" not in output
+
+
+def test_try_record_returns_failure_without_recursion(app, monkeypatch):
+    from python_lab.session import SessionError
+
+    log = SessionLog(app.repository.path)
+    calls = []
+    def fail(command, summary):
+        calls.append(command)
+        raise SessionError("falha de histórico")
+    monkeypatch.setattr(log, "record", fail)
+    assert log.try_record("/status", "Status") == "falha de histórico"
+    assert calls == ["/status"]
+
+
+def test_history_and_close_failures_allow_exit(app, monkeypatch):
+    from python_lab.session import SessionError
+
+    log = SessionLog(app.repository.path)
+    log.start()
+    def fail(*args):
+        raise SessionError("histórico indisponível")
+    monkeypatch.setattr(log, "load", fail)
+    monkeypatch.setattr(log, "close", fail)
+    console = Console(record=True, width=120)
+    cli = PythonLabCLI(app, console, log)
+    assert cli.execute("/session all") is True
+    assert cli.execute("/exit") is False
+    assert "histórico indisponível" in console.export_text()
+
+
+def test_progress_conflict_blocks_mutation_but_allows_exit(app):
+    from python_lab.progress import ProgressRepository
+
+    app.start("001")
+    other = ProgressRepository(app.repository.path)
+    newer = other.load()
+    newer.missions["001"].explanation = "Outra sessão"
+    other.save(newer)
+    console = Console(record=True, width=120)
+    cli = PythonLabCLI(app, console)
+    assert cli.execute("/explain Estado antigo") is True
+    assert app.current_progress().explanation is None
+    assert cli.execute("/exit") is False
+    assert "Conflito de progresso" in console.export_text()
+    assert other.load().missions["001"].explanation == "Outra sessão"
+
+
+def test_unreadable_fingerprint_is_actionable_without_incrementing_attempt(app, monkeypatch):
+    from python_lab.app import ApplicationError
+    import pytest
+
+    app.start("001")
+    app.save_plan({"input": "x", "output": "y", "steps": "z", "risks": "w"})
+    def fail(path):
+        raise PermissionError("sem permissão")
+    monkeypatch.setattr("python_lab.app.solution_fingerprint", fail)
+    with pytest.raises(ApplicationError, match="solução"):
+        app.run_current_tests()
+    assert app.current_progress().attempts == 0
+    progress = app.current_progress()
+    progress.tests_passed = True
+    progress.tested_solution_path = str(app.current_mission().solution_path)
+    console = Console(record=True)
+    cli = PythonLabCLI(app, console)
+    assert cli.execute("/status") is True
+    assert cli.execute("/help") is True
+    assert "sem permissão" in console.export_text()
+
+
+def test_removed_active_mission_is_actionable(app):
+    from python_lab.app import ApplicationError, PythonLabApp
+    import pytest
+
+    app.start("001")
+    with pytest.raises(ApplicationError, match="ativa.*001.*catálogo"):
+        PythonLabApp(app.goal, app.skills, [], app.repository, app.project_root)

@@ -100,6 +100,7 @@ class ExplainScreen(ModalScreen[str | None]):
                     id="reflection", markup=False,
                 )
                 yield TextArea(self._explanation, id="explain-text")
+                yield Static("", id="explain-error", markup=False)
             with Horizontal(id="dialog-buttons"):
                 yield Button("Concluir", variant="primary", id="explain-save")
                 yield Button("Cancelar", id="explain-cancel")
@@ -109,7 +110,12 @@ class ExplainScreen(ModalScreen[str | None]):
 
     def on_button_pressed(self, event: Button.Pressed) -> None:
         if event.button.id == "explain-save":
-            self.dismiss(self.query_one("#explain-text", TextArea).text)
+            text = self.query_one("#explain-text", TextArea).text
+            if not text.strip():
+                self.query_one("#explain-error", Static).update("A explicação não pode ser vazia")
+                self.query_one("#explain-text", TextArea).focus()
+                return
+            self.dismiss(text)
             return
         self.dismiss(None)
 

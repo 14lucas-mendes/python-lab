@@ -78,6 +78,14 @@ class SessionLog:
             raise SessionError(f"Não foi possível registrar evento: {exc}") from exc
         self._current["events"] = self.current_events()
 
+    def try_record(self, command: str, summary: str) -> str | None:
+        """Record best-effort, returning an error without logging that error again."""
+        try:
+            self.record(command, summary)
+        except SessionError as exc:
+            return str(exc)
+        return None
+
     def close(self, summary: str | None = None) -> None:
         if not self.is_open:
             return

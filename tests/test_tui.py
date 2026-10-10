@@ -1,5 +1,7 @@
 import asyncio
 
+import pytest
+
 from textual.widgets import Input, Static, TextArea
 
 from python_lab.models import TestResult as RunnerResult
@@ -233,3 +235,84 @@ def test_tui_exit_command_closes_session(app):
     _drive(app, scenario, session_log=session)
     assert session._current is not None
     assert session._current.get("ended_at") is not None
+
+
+@pytest.mark.parametrize("text", ["", "  \n\t"])
+def test_blank_explanation_never_reads_stdin(app, monkeypatch, text):
+    from rich.console import Console
+    from python_lab.tui.screens import ExplainScreen
+
+    app.start("001")
+    def forbidden(*args):
+        raise AssertionError("TUI read stdin")
+    monkeypatch.setattr(Console, "input", forbidden)
+    async def scenario(tui, pilot):
+        await _submit(tui, pilot, "/explain")
+        tui.query_one("#explain-text", TextArea).load_text(text)
+        await pilot.click("#explain-save")
+        await pilot.pause()
+        assert isinstance(tui.screen, ExplainScreen)
+        assert tui.lab.current_progress().explanation is None
+        assert "vazia" in _text(tui.query_one("#explain-error", Static))
+    _drive(app, scenario)
+
+
+@pytest.mark.parametrize("exit_key", ["q", "/exit"])
+def test_tui_conflict_can_exit_without_overwriting(app, exit_key):
+    from python_lab.progress import ProgressRepository
+
+    app.start("001")
+    other = ProgressRepository(app.repository.path)
+    newer = other.load()
+    newer.missions["001"].explanation = "Outra sessão"
+    other.save(newer)
+    async def scenario(tui, pilot):
+        await _submit(tui, pilot, "/explain Texto antigo")
+        assert "Conflito de progresso" in _transcript(tui)
+        assert tui.lab.current_progress().explanation is None
+        if exit_key == "q":
+            await pilot.press("q")
+            await pilot.pause()
+        else:
+            await _submit(tui, pilot, exit_key)
+        assert tui._exit
+    _drive(app, scenario)
+    assert other.load().missions["001"].explanation == "Outra sessão"
+
+
+def test_tui_history_failures_remain_visible_and_allow_exit(app, monkeypatch):
+    from python_lab.session import SessionError
+
+    log = SessionLog(app.repository.path)
+    log.start()
+    def fail(*args):
+        raise SessionError("histórico indisponível")
+    monkeypatch.setattr(log, "record", fail)
+    monkeypatch.setattr(log, "close", fail)
+    async def scenario(tui, pilot):
+        await _submit(tui, pilot, "/mission 001")
+        assert "histórico indisponível" in _transcript(tui)
+        await _submit(tui, pilot, "/exit")
+        assert tui._exit
+        assert "histórico indisponível" in _transcript(tui)
+    _drive(app, scenario, log)
+
+
+def test_tui_unreadable_fingerprint_keeps_composer_available(app, monkeypatch):
+    app.start("001")
+    app.save_plan({"input": "x", "output": "y", "steps": "z", "risks": "w"})
+    progress = app.current_progress()
+    progress.tests_passed = True
+    progress.tested_solution_path = str(app.current_mission().solution_path)
+    app.persist()
+    def fail(path):
+        raise PermissionError("sem permissão")
+    monkeypatch.setattr("python_lab.app.solution_fingerprint", fail)
+    async def scenario(tui, pilot):
+        assert "sem permissão" in _transcript(tui)
+        await _submit(tui, pilot, "/help")
+        assert "Comandos" in _transcript(tui)
+        await pilot.press("q")
+        await pilot.pause()
+        assert tui._exit
+    _drive(app, scenario)

@@ -3,7 +3,7 @@ from pathlib import Path
 
 import pytest
 
-from python_lab.catalog import CatalogError, load_goal, load_missions, load_roadmap
+from python_lab.catalog import CatalogError, load_goal, load_missions, load_roadmap, load_skills
 from python_lab.learning import recommend_mission
 from python_lab.models import AppProgress, Mission, MissionProgress
 
@@ -213,3 +213,29 @@ def test_roadmap_rejects_mission_with_unknown_cycle(tmp_path):
     )
     with pytest.raises(CatalogError, match="ciclo inexistente"):
         load_roadmap(path, [orphan])
+
+
+def test_duplicate_skill_is_rejected(tmp_path):
+    path = tmp_path / "skills.json"
+    row = {"id": "x", "name": "X", "category": "core", "future": False}
+    path.write_text(json.dumps([row, row]), encoding="utf-8")
+    with pytest.raises(CatalogError, match="duplicad"):
+        load_skills(path)
+
+
+@pytest.mark.parametrize("future", ["false", 0, None])
+def test_skill_future_requires_boolean(tmp_path, future):
+    path = tmp_path / "skills.json"
+    path.write_text(json.dumps([{"id": "x", "name": "X", "category": "core", "future": future}]), encoding="utf-8")
+    with pytest.raises(CatalogError, match="future"):
+        load_skills(path)
+
+
+def test_unknown_mission_skill_is_rejected_before_loading_state(app):
+    from python_lab.app import PythonLabApp
+    from python_lab.progress import ProgressRepository
+
+    repository = ProgressRepository(app.repository.path.parent / "uninitialized.sqlite3")
+    with pytest.raises(CatalogError, match="skill.*inexistente"):
+        PythonLabApp(app.goal, {}, app.missions, repository, app.project_root)
+    assert not repository.path.exists()

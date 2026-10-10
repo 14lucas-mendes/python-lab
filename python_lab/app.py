@@ -10,13 +10,34 @@ from python_lab.learning import (
     reveal_hint,
     start_mission,
 )
-from python_lab.models import Goal, Mission, MissionProgress, RoadmapCycle, Skill, TestResult
+from python_lab.catalog import CatalogError
+from python_lab.models import AppProgress, Goal, Mission, MissionProgress, RoadmapCycle, Skill, TestResult
 from python_lab.progress import ProgressRepository
 from python_lab.test_runner import run_tests, solution_fingerprint
 
 
 class ApplicationError(Exception):
     pass
+
+
+class ActiveMissionError(ApplicationError):
+    """Persisted active mission no longer exists in the catalog."""
+
+
+def validate_active_mission(progress: AppProgress, missions: list[Mission]) -> None:
+    current = progress.current_mission_id
+    if current is not None and current not in {mission.id for mission in missions}:
+        raise ActiveMissionError(
+            f"Missão ativa {current} não existe no catálogo. "
+            "Restaure o catálogo ou revise os dados migrados."
+        )
+
+
+def _solution_fingerprint(path: Path) -> str | None:
+    try:
+        return solution_fingerprint(path)
+    except OSError as exc:
+        raise ApplicationError(f"Não foi possível ler a solução: {path}: {exc}") from exc
 
 
 class PythonLabApp:
@@ -29,6 +50,10 @@ class PythonLabApp:
         project_root: Path,
         roadmap: tuple[RoadmapCycle, ...] = (),
     ) -> None:
+        for mission in missions:
+            for skill in mission.skills:
+                if skill not in skills:
+                    raise CatalogError(f"Missão {mission.id}: skill inexistente: {skill}")
         self.goal = goal
         self.skills = skills
         self.missions = missions
@@ -36,6 +61,7 @@ class PythonLabApp:
         self.project_root = project_root
         self.roadmap = roadmap
         self.progress = repository.load()
+        validate_active_mission(self.progress, missions)
         self._persisted_progress = copy.deepcopy(self.progress)
         # Session-only output: never persisted as learner progress.
         self.last_test_results: dict[str, TestResult] = {}
@@ -113,10 +139,10 @@ class PythonLabApp:
             key in progress.plan and str(progress.plan[key]).strip() for key in PLAN_KEYS
         ):
             raise ApplicationError("Planejamento incompleto: registre /plan antes de testar")
-        progress.attempts += 1
         chosen = solution_path or mission.solution_path
         chosen_path = Path(chosen).resolve()
-        fingerprint = solution_fingerprint(chosen_path)
+        fingerprint = _solution_fingerprint(chosen_path)
+        progress.attempts += 1
         result = run_tests(mission.test_path, self.project_root, chosen)
         progress.tests_passed = result.passed
         progress.tested_solution_path = str(chosen_path)
@@ -147,7 +173,7 @@ class PythonLabApp:
         progress = self.current_progress()
         if not progress.tests_passed or not progress.tested_solution_path:
             return False
-        current_fingerprint = solution_fingerprint(Path(progress.tested_solution_path))
+        current_fingerprint = _solution_fingerprint(Path(progress.tested_solution_path))
         return (
             progress.tested_solution_fingerprint is not None
             and current_fingerprint == progress.tested_solution_fingerprint

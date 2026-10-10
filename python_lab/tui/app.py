@@ -116,8 +116,8 @@ class PythonLabTUI(App[None]):
             return None
 
     def action_quit_lab(self) -> None:
-        self.lab.persist()
-        self._close_session()
+        self.cli.exit()
+        self._flush_console()
         self.exit()
 
     def action_composer_escape(self) -> None:
@@ -392,6 +392,15 @@ class PythonLabTUI(App[None]):
         return f"{self.lab.goal.title} · missão {current}"
 
     def _refresh_status(self) -> None:
+        try:
+            self._update_status()
+        except ApplicationError as exc:
+            message = str(exc)
+            if not self.transcript_entries or self.transcript_entries[-1] != message:
+                self._append_response(message)
+                self.notify(message, severity="error")
+
+    def _update_status(self) -> None:
         self.output_console.size = (max(20, self.size.width - 4), max(1, self.size.height))
         if self._testing:
             return
@@ -472,6 +481,8 @@ class PythonLabTUI(App[None]):
         if not cleaned:
             return
         self.transcript_entries.append(cleaned)
+        if not self.screen_stack:
+            return
         shell = self._shell()
         shell.query_one("#response", Static).update(Text(cleaned))
         shell.query_one("#response").display = True
@@ -491,17 +502,19 @@ class PythonLabTUI(App[None]):
     def _record(self, command: str, summary: str) -> None:
         if self.session_log is None:
             return
-        try:
-            self.session_log.record(command, summary)
-        except SessionError as exc:
-            self.notify(str(exc), severity="error")
+        failure = self.session_log.try_record(command, summary)
+        if failure is not None:
+            self._append_response(failure)
+            self.notify(failure, severity="error")
 
     def _close_session(self, summary: str | None = None) -> None:
-        if self.session_log is None or self.session_log._current is None:
-            return
-        if self.session_log._current.get("ended_at") is not None:
+        if self.session_log is None or not self.session_log.is_open:
             return
         try:
             self.session_log.close(summary)
-        except SessionError:
-            pass
+        except SessionError as exc:
+            self._append_response(str(exc))
+            if self.screen_stack:
+                self.notify(str(exc), severity="error")
+            else:
+                Console().print(str(exc), style="red", markup=False)

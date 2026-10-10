@@ -67,11 +67,16 @@ def load_skills(path: Path) -> dict[str, Skill]:
         if not isinstance(item, dict):
             raise CatalogError(f"Cada skill deve ser um objeto JSON em {path}")
         skill_id = _text(_require(item, "id", path), "id", path)
+        if skill_id in skills:
+            raise CatalogError(f"ID de skill duplicado em {path}: {skill_id}")
+        future = item.get("future", False)
+        if not isinstance(future, bool):
+            raise CatalogError(f"Campo future deve ser booleano em {path}: {skill_id}")
         skills[skill_id] = Skill(
             id=skill_id,
             name=_text(_require(item, "name", path), "name", path),
             category=_text(_require(item, "category", path), "category", path),
-            future=bool(item.get("future", False)),
+            future=future,
         )
     return skills
 

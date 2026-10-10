@@ -9,7 +9,7 @@ from rich.markdown import Markdown
 from rich.panel import Panel
 from rich.table import Table
 
-from python_lab.app import ApplicationError, PythonLabApp
+from python_lab.app import ActiveMissionError, ApplicationError, PythonLabApp
 from python_lab.catalog import CatalogError, load_goal, load_missions, load_roadmap, load_skills
 from python_lab.learning import CompletionError, HintError, LearningError
 from python_lab.progress import ProgressError, ProgressRepository
@@ -150,26 +150,41 @@ class PythonLabCLI:
         display = f"{command} {argument}".strip()
         try:
             result = handler(argument)
+        except (EOFError, KeyboardInterrupt):
+            return self.exit()
         except (ApplicationError, LearningError, ProgressError, SessionError) as exc:
             self.console.print(str(exc), style="red", markup=False)
             self._record(display, str(exc))
             self._print_next_step()
             return True
-        self._record(display, self._last_summary)
         if result:
+            self._record(display, self._last_summary)
             if command != "/status":
                 self._print_next_step()
-        elif self.session_log is not None:
-            self.session_log.close()
         return result
 
     def _record(self, command: str, summary: str) -> None:
         if self.session_log is None:
             return
-        self.session_log.record(command, summary)
+        failure = self.session_log.try_record(command, summary)
+        if failure is not None:
+            self.console.print(failure, style="red", markup=False)
+
+    def _close_session(self, summary: str | None = None) -> None:
+        if self.session_log is None:
+            return
+        try:
+            self.session_log.close(summary)
+        except SessionError as exc:
+            self.console.print(str(exc), style="red", markup=False)
 
     def _print_next_step(self) -> None:
-        self.console.print(f"Próximo: {self.app.next_step()}", style="dim")
+        try:
+            step = self.app.next_step()
+        except ApplicationError as exc:
+            self.console.print(str(exc), style="red", markup=False)
+            return
+        self.console.print(f"Próximo: {step}", style="dim")
 
     def _printable(self, text: str) -> str:
         encoding = getattr(self.console.file, "encoding", None) or "utf-8"
@@ -437,8 +452,14 @@ class PythonLabCLI:
         return True
 
     def exit(self, _argument: str = "") -> bool:
-        self.app.persist()
-        self.console.print("Progresso salvo. Até a próxima sessão.")
+        try:
+            self.app.persist()
+        except ProgressError as exc:
+            self.console.print(str(exc), style="red", markup=False)
+            self.console.print("Sessão encerrada. O último estado confirmado foi preservado.")
+        else:
+            self.console.print("Progresso salvo. Até a próxima sessão.")
+        self._close_session("Sessão encerrada")
         return False
 
 
@@ -464,7 +485,12 @@ def _banner(app: PythonLabApp, console: Console) -> None:
     console.print(
         Panel(table, title=" Python Lab ", title_align="left", box=box.SQUARE, padding=(1, 1))
     )
-    console.print(f"Próximo: {app.next_step()}", style="green")
+    try:
+        step = app.next_step()
+    except ApplicationError as exc:
+        console.print(str(exc), style="red", markup=False)
+    else:
+        console.print(f"Próximo: {step}", style="green")
 
 
 def build_app(project_root: Path | None = None, *, data_dir: Path | None = None) -> PythonLabApp:
@@ -485,26 +511,34 @@ def build_app(project_root: Path | None = None, *, data_dir: Path | None = None)
         real_progress = False
         real_sessions = False
         if old_progress.exists():
-            state = decode_progress(old_progress.read_bytes())
+            try:
+                raw_progress = old_progress.read_bytes()
+            except OSError as exc:
+                raise ProgressError(f"Não foi possível ler o progresso legado: {old_progress}: {exc}") from exc
+            state = decode_progress(raw_progress)
             real_progress = bool(state.current_mission_id or state.missions or state.evidence)
         if old_sessions.exists():
-            real_sessions = bool(decode_sessions(old_sessions.read_bytes()))
+            try:
+                raw_sessions = old_sessions.read_bytes()
+            except OSError as exc:
+                raise SessionError(f"Não foi possível ler o histórico legado: {old_sessions}: {exc}") from exc
+            real_sessions = bool(decode_sessions(raw_sessions))
         if real_progress or real_sessions:
             raise ProgressError(
                 f"Estado JSON legado encontrado. Execute lab migrate --from-dir {legacy} --data-dir {paths.data_dir}"
             )
     missions = load_missions(root / "missions")
-    app = PythonLabApp(
-        goal=load_goal(root / "data" / "goal.json"),
-        skills=load_skills(root / "data" / "skills.json"),
-        missions=missions,
-        repository=ProgressRepository(paths.data_dir / "lab.sqlite3"),
-        project_root=root,
-        roadmap=load_roadmap(root / "data" / "roadmap.json", missions),
-    )
-    current = app.progress.current_mission_id
-    if current is not None and current not in {mission.id for mission in missions}:
-        raise ProgressError(f"Missão ativa {current} não existe no catálogo. Restaure o catálogo ou revise os dados migrados.")
+    try:
+        app = PythonLabApp(
+            goal=load_goal(root / "data" / "goal.json"),
+            skills=load_skills(root / "data" / "skills.json"),
+            missions=missions,
+            repository=ProgressRepository(paths.data_dir / "lab.sqlite3"),
+            project_root=root,
+            roadmap=load_roadmap(root / "data" / "roadmap.json", missions),
+        )
+    except ActiveMissionError as exc:
+        raise ProgressError(str(exc)) from exc
     return app
 
 
@@ -540,14 +574,10 @@ def _run_classic(app: PythonLabApp, session_log: SessionLog | None, console: Con
             if not cli.execute(line):
                 break
     except KeyboardInterrupt:
-        if session_log is not None:
-            session_log.close("Sessão interrompida")
+        cli._close_session("Sessão interrompida")
         console.print("\nSessão encerrada. O último estado confirmado foi preservado.")
     except EOFError:
-        app.persist()
-        if session_log is not None:
-            session_log.close("Sessão encerrada")
-        console.print("\nProgresso salvo. Até a próxima sessão.")
+        cli.exit()
     return 0
 
 
@@ -555,9 +585,11 @@ def _run_tui(app: PythonLabApp, session_log: SessionLog | None) -> int:
     try:
         PythonLabTUI(lab=app, session_log=session_log).run()
     finally:
-        if session_log is not None and session_log._current is not None:
-            if session_log._current.get("ended_at") is None:
+        if session_log is not None and session_log.is_open:
+            try:
                 session_log.close("Sessão encerrada")
+            except SessionError as exc:
+                Console().print(str(exc), style="red", markup=False)
     return 0
 
 
@@ -581,7 +613,10 @@ def main(argv: Sequence[str] | None = None) -> int:
             return 0
         app = build_app(data_dir=args.data_dir) if args.data_dir is not None else build_app()
         session_log = SessionLog(app.repository.path)
-        session_log.start()
+        try:
+            session_log.start()
+        except SessionError as exc:
+            console.print(str(exc), style="red", markup=False)
     except ValueError as exc:
         console.print(str(exc), style="red", markup=False)
         return 2
