@@ -35,10 +35,13 @@ def test_preview_is_literal_diff_and_writes_nothing(tmp_path):
 def test_apply_preserves_exact_old_bytes_and_permissions(tmp_path):
     source, service, proposal = setup_patch(tmp_path, before=b"x='ol\xc3\xa1'\r\n", after="x='novo'\n")
     source.chmod(0o640)
+    original_mode = stat.S_IMODE(source.stat().st_mode)
+    if os.name == "posix":
+        assert original_mode == 0o640
     result = service.apply(proposal, confirmed=True)
     assert result == source
     assert source.read_bytes() == b"x='novo'\n"
-    assert stat.S_IMODE(source.stat().st_mode) == 0o640
+    assert stat.S_IMODE(source.stat().st_mode) == original_mode
     assert b"x='ol\xc3\xa1'\r\n" in [p.read_bytes() for p in (tmp_path / "state").rglob("*") if p.is_file()]
 
 
