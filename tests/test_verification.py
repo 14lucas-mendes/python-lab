@@ -1,4 +1,5 @@
 import hashlib
+import json
 from pathlib import Path
 import sys
 import threading
@@ -152,3 +153,105 @@ def test_cancellation_at_process_completion_never_passes(tmp_path):
         patch, workspace, checks=("ruff",), cancel=cancel,
     )
     assert result.status == "cancelled" and result.checks[0].status == "cancelled"
+
+
+def test_selected_dependency_edit_invalidates_persisted_verification(tmp_path):
+    (tmp_path / "a.py").write_text("def f():\n    return 1\n")
+    (tmp_path / "b.py").write_text("value = 2\n")
+    (tmp_path / "test_a.py").write_text(
+        "from a import f\ndef test_f(): assert f() == 2\n"
+    )
+    workspace = Workspace(tmp_path)
+    snapshot = workspace.snapshot([Path("a.py"), Path("b.py")])
+    patch = PatchProposal(
+        "dependencies", FileChange(
+            "a.py", snapshot.sources[0].sha256,
+            "from b import value\ndef f():\n    return value\n",
+        ), "fix", ("a.py", "b.py"),
+    )
+    PatchService(workspace, tmp_path / ".state").apply(patch, confirmed=True)
+    state = tmp_path / ".state"
+    service = VerificationService(ProcessRunner(), store=VerificationStore(state))
+    assert service.run(patch, workspace, checks=("pytest",)).status == "passed"
+    # Recreate the service to prove that the selection association survives persistence.
+    reloaded = VerificationService(ProcessRunner(), store=VerificationStore(state))
+    assert reloaded.current(patch, workspace).status == "passed"
+    (tmp_path / "b.py").write_text("value = 3\n")
+    assert reloaded.current(patch, workspace).status == "unverified"
+    assert reloaded.run(patch, workspace, checks=("pytest",)).status == "failed"
+
+
+def test_legacy_record_needs_fresh_verification(tmp_path):
+    workspace, patch = proposal(tmp_path, "def f():\n    return 2\n")
+    state = tmp_path / ".state"
+    PatchService(workspace, state).apply(patch, confirmed=True)
+    service = VerificationService(ProcessRunner(), store=VerificationStore(state))
+    assert service.run(patch, workspace, checks=("ast",)).status == "passed"
+    record = next((state / "verifications").glob("*.json"))
+    payload = json.loads(record.read_text())
+    payload["result"].pop("selected_sources", None)
+    record.write_text(json.dumps(payload))
+    assert service.current(patch, workspace).status == "unverified"
+    assert service.run(patch, workspace, checks=("ast",)).status == "passed"
+    assert service.current(patch, workspace).status == "passed"
+
+
+def test_cancellation_during_final_capture_never_publishes_passed(tmp_path):
+    workspace, patch = proposal(tmp_path, "def f():\n    return 2\n")
+    state = tmp_path / ".state"
+    PatchService(workspace, state).apply(patch, confirmed=True)
+    cancel = threading.Event()
+
+    class CancellingWorkspace(Workspace):
+        captures = 0
+
+        def snapshot(self, paths):
+            captured = super().snapshot(paths)
+            self.captures += 1
+            if self.captures == 2:
+                cancel.set()
+            return captured
+
+    selected = CancellingWorkspace(tmp_path)
+    service = VerificationService(ProcessRunner(), store=VerificationStore(state))
+    result = service.run(patch, selected, checks=("ast",), cancel=cancel)
+    assert cancel.is_set()
+    assert result.status == "cancelled"
+    assert service.current(patch, selected).status == "cancelled"
+
+
+@pytest.mark.parametrize("invalid", [
+    [], [["other.py", "0" * 64]], [["a.py", "invalid"]],
+    [["a.py", "0" * 64]] * 21,
+])
+def test_incomplete_or_invalid_selected_fingerprints_are_unverified(tmp_path, invalid):
+    workspace, patch = proposal(tmp_path, "def f():\n    return 2\n")
+    state = tmp_path / ".state"
+    PatchService(workspace, state).apply(patch, confirmed=True)
+    service = VerificationService(ProcessRunner(), store=VerificationStore(state))
+    assert service.run(patch, workspace, checks=("ast",)).status == "passed"
+    record = next((state / "verifications").glob("*.json"))
+    payload = json.loads(record.read_text())
+    payload["result"]["selected_sources"] = invalid
+    record.write_text(json.dumps(payload))
+    assert service.current(patch, workspace).status == "unverified"
+
+
+@pytest.mark.parametrize("check", ["ruff", "pytest"])
+def test_verification_cleanup_failure_is_never_downgraded(tmp_path, check):
+    from python_lab.runtime.processes import ProcessCleanupError
+
+    workspace, patch = proposal(tmp_path, "def f():\n    return 2\n")
+    state = tmp_path / ".state"
+    PatchService(workspace, state).apply(patch, confirmed=True)
+    cancel = threading.Event()
+
+    class Runner:
+        def run(self, argv, cwd, **kwargs):
+            cancel.set()
+            raise ProcessCleanupError("descendant still running")
+
+    service = VerificationService(Runner(), store=VerificationStore(state))
+    with pytest.raises(ProcessCleanupError, match="descendant still running"):
+        service.run(patch, workspace, checks=(check,), cancel=cancel)
+    assert service.current(patch, workspace).status == "unverified"

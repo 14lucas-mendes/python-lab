@@ -31,6 +31,7 @@ class VerificationResult:
     status: Literal["unverified", "passed", "failed", "cancelled"]
     checks: tuple[VerificationCheck, ...]
     sha256: str | None = None
+    selected_sources: tuple[tuple[str, str], ...] = ()
 
 
 class VerificationStore:
@@ -99,7 +100,26 @@ class VerificationStore:
                 return None
             raw = payload["result"]
             checks = tuple(VerificationCheck(**item) for item in raw["checks"])
-            return VerificationResult(raw["status"], checks, raw["sha256"])
+            fingerprints = raw.get("selected_sources", [])
+            if not isinstance(fingerprints, list):
+                return None
+            if fingerprints and (
+                len(fingerprints) != len(proposal.selected_paths)
+                or any(
+                    not isinstance(item, list)
+                    or len(item) != 2
+                    or item[0] != path
+                    or not isinstance(item[1], str)
+                    or len(item[1]) != 64
+                    or any(char not in "0123456789abcdef" for char in item[1])
+                    for item, path in zip(fingerprints, proposal.selected_paths)
+                )
+            ):
+                return None
+            return VerificationResult(
+                raw["status"], checks, raw["sha256"],
+                tuple((path, digest) for path, digest in fingerprints),
+            )
         except (OSError, ValueError, TypeError, KeyError):
             return None
 
@@ -148,14 +168,18 @@ class VerificationService:
         stored = (
             self.store.load(proposal, workspace) if self.store is not None else None
         )
-        if stored is None:
+        if stored is None or not stored.selected_sources:
             return VerificationResult("unverified", ())
         try:
-            _, _, digest = self._snapshot(proposal, workspace)
+            snapshot, _, digest = self._snapshot(proposal, workspace)
         except AssistantError:
             return VerificationResult("unverified", ())
         return (
-            stored if stored.sha256 == digest else VerificationResult("unverified", ())
+            stored
+            if stored.sha256 == digest and stored.selected_sources == tuple(
+                (source.path, source.sha256) for source in snapshot.sources
+            )
+            else VerificationResult("unverified", ())
         )
 
     def run(
@@ -329,7 +353,8 @@ class VerificationService:
             raise AssistantError("Fontes selecionadas mudaram durante a verificação.")
         status = (
             "cancelled"
-            if any(item.status == "cancelled" for item in results)
+            if (cancel is not None and cancel.is_set())
+            or any(item.status == "cancelled" for item in results)
             else (
                 "passed"
                 if len(results) == len(checks)
@@ -337,7 +362,10 @@ class VerificationService:
                 else "failed"
             )
         )
-        verification = VerificationResult(status, tuple(results), digest)
+        verification = VerificationResult(
+            status, tuple(results), digest,
+            tuple((source.path, source.sha256) for source in snapshot.sources),
+        )
         if self.store is not None:
             self.store.save(proposal, workspace, verification)
         return verification
