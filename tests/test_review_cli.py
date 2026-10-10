@@ -19,7 +19,8 @@ from python_lab.workspace import Workspace
 def proposal(project, state, name='bug.py', text='def add(a, b):\n    return a + b\n'):
     workspace = Workspace(project)
     snapshot = workspace.snapshot((Path(name),))
-    patch = PatchProposal('local-id', FileChange(name, snapshot.sources[0].sha256, text), 'fix', (name,))
+    captured = snapshot.sources[0]
+    patch = PatchProposal('local-id', FileChange(captured.path, captured.sha256, text), 'fix', (captured.path,))
     PatchService(workspace, state).save(patch)
     return patch
 

@@ -2,6 +2,7 @@ import asyncio
 import time
 
 import pytest
+from rich.text import Text
 from textual.widgets import Static
 
 from python_lab.cli import AssistantRuntime
@@ -21,6 +22,7 @@ async def wait_action(tui):
 def test_tui_diff_confirmation_preserves_or_applies_bytes(app, tmp_path, confirm):
     source = tmp_path / 'bug.py'
     source.write_text('x=1\n')
+    before = source.read_bytes()
     patch = proposal(tmp_path, tmp_path, text='x=2\n')
     tui = PythonLabTUI(app, assistant_project=tmp_path)
     tui.cli.assistant_runtime = AssistantRuntime(tmp_path, app)
@@ -37,13 +39,17 @@ def test_tui_diff_confirmation_preserves_or_applies_bytes(app, tmp_path, confirm
             assert tui._assistant_task is not None
             # push_screen publishes the screen before mounting its children.
             await pilot.pause()
-            literal = str(tui.screen.query_one('#patch-diff', Static).render())
+            content = tui.screen.query_one('#patch-diff', Static).renderable
+            assert isinstance(content, Text)
+            literal = content.plain
             assert str(source.resolve()) in literal and '+x=2' in literal and '-x=1' in literal
             assert source.read_text() == 'x=1\n'
+            assert source.read_bytes() == before
             await pilot.pause()
             await pilot.press('y' if confirm else 'escape')
             await wait_action(tui)
             assert source.read_text() == ('x=2\n' if confirm else 'x=1\n')
+            assert source.read_bytes() == (patch.change.after_text.encode('utf-8') if confirm else before)
     asyncio.run(run())
 
 
