@@ -1,4 +1,5 @@
 import copy
+import threading
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -132,7 +133,9 @@ class PythonLabApp:
         progress.plan = plan
         self.persist()
 
-    def run_current_tests(self, solution_path: Path | None = None) -> TestResult:
+    def run_current_tests(
+        self, solution_path: Path | None = None, *, cancel: threading.Event | None = None
+    ) -> TestResult:
         mission = self.current_mission()
         progress = self.current_progress()
         if not progress.plan or not all(
@@ -142,8 +145,12 @@ class PythonLabApp:
         chosen = solution_path or mission.solution_path
         chosen_path = Path(chosen).resolve()
         fingerprint = _solution_fingerprint(chosen_path)
+        result = run_tests(mission.test_path, self.project_root, chosen, cancel=cancel)
+        if cancel is not None and cancel.is_set():
+            progress.tests_passed = False
+            self.persist()
+            return TestResult(False, -1, "Execução cancelada.", summary="Execução cancelada")
         progress.attempts += 1
-        result = run_tests(mission.test_path, self.project_root, chosen)
         progress.tests_passed = result.passed
         progress.tested_solution_path = str(chosen_path)
         progress.tested_solution_fingerprint = fingerprint

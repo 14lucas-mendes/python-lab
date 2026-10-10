@@ -123,7 +123,7 @@ def test_tui_runs_passing_and_failing_tests(app, monkeypatch):
             RunnerResult(True, 0, "===== 1 passed =====", summary="1 teste(s): 1 aprovado(s)"),
         ]
     )
-    monkeypatch.setattr(app, "run_current_tests", lambda: next(results))
+    monkeypatch.setattr(app, "run_current_tests", lambda **kwargs: next(results))
 
     async def scenario(tui, pilot):
         await _submit(tui, pilot, "/test")
@@ -315,4 +315,65 @@ def test_tui_unreadable_fingerprint_keeps_composer_available(app, monkeypatch):
         await pilot.press("q")
         await pilot.pause()
         assert tui._exit
+    _drive(app, scenario)
+
+
+def test_worker_cancellation_waits_for_real_process_cleanup(app, tmp_path):
+    import time
+    from dataclasses import replace
+    from test_process_runner import tree_command, assert_tree_stopped
+
+    command = tree_command(tmp_path)
+    suite = tmp_path / "test_hanging_tree.py"
+    suite.write_text(
+        "import subprocess\n"
+        "def test_tree():\n"
+        f"    subprocess.run({command!r}, check=True)\n"
+    )
+    app.missions[0] = replace(app.missions[0], test_path=suite)
+    app.start("001")
+    app.save_plan(dict(input="x", output="y", steps="z", risks="w"))
+
+    async def scenario(tui, pilot):
+        await _submit(tui, pilot, "/test")
+        deadline = time.monotonic() + 5
+        while not (tmp_path / "ready").exists() and time.monotonic() < deadline:
+            await asyncio.sleep(.01)
+        assert (tmp_path / "ready").exists(), "Descendant never became ready"
+        worker = next(worker for worker in tui.workers if worker.name == "run-tests")
+        worker.cancel()
+        assert tui._testing
+        assert tui.query_one("#composer", Composer).disabled
+        deadline = time.monotonic() + 5
+        while tui._testing and time.monotonic() < deadline:
+            await asyncio.sleep(.01)
+        assert not tui._testing, "Cancellation never completed process cleanup"
+        assert_tree_stopped(tmp_path)
+        assert not tui.query_one("#composer", Composer).disabled
+        assert tui.last_test_result is None
+        assert not app.current_progress().tests_passed
+        assert not app.current_progress().attempt_history
+        assert not app.repository.load().missions["001"].tests_passed
+        assert not any(event["command"] == "/test" for event in tui.session_log.current_events())
+        assert "cancelad" in _transcript(tui).lower()
+
+    _drive(app, scenario)
+
+
+def test_cancelling_pending_worker_restores_composer(app):
+    import time
+    app.start("001")
+    app.save_plan(dict(input="x", output="y", steps="z", risks="w"))
+
+    async def scenario(tui, pilot):
+        tui._run_tests()
+        worker = next(worker for worker in tui.workers if worker.name == "run-tests")
+        worker.cancel()
+        deadline = time.monotonic() + 2
+        while tui._testing and time.monotonic() < deadline:
+            await asyncio.sleep(.01)
+        assert not tui._testing
+        assert not tui.query_one("#composer", Composer).disabled
+        assert app.current_progress().attempts == 0
+
     _drive(app, scenario)

@@ -1,12 +1,13 @@
 import hashlib
 import os
-import subprocess
+import threading
 import sys
 import tempfile
 import xml.etree.ElementTree as ET
 from pathlib import Path
 
 from python_lab.models import TestResult
+from python_lab.runtime.processes import ProcessRunner
 
 
 def solution_fingerprint(solution_path: Path) -> str | None:
@@ -83,6 +84,8 @@ def run_tests(
     project_root: Path,
     solution_path: Path | None = None,
     timeout: float = 30.0,
+    *,
+    cancel: threading.Event | None = None,
 ) -> TestResult:
     env = os.environ.copy()
     if solution_path is not None:
@@ -90,7 +93,7 @@ def run_tests(
     with tempfile.TemporaryDirectory(prefix="python-lab-pytest-") as report_dir:
         report_path = Path(report_dir) / "results.xml"
         try:
-            completed = subprocess.run(
+            completed = ProcessRunner(env=env).run(
                 [
                     sys.executable,
                     "-m",
@@ -102,25 +105,8 @@ def run_tests(
                     str(report_path),
                 ],
                 cwd=project_root,
-                text=True,
-                encoding="utf-8",
-                errors="replace",
-                stdout=subprocess.PIPE,
-                stderr=subprocess.STDOUT,
-                check=False,
-                env=env,
                 timeout=timeout,
-            )
-        except subprocess.TimeoutExpired as exc:
-            partial = exc.output or exc.stdout or ""
-            if isinstance(partial, bytes):
-                partial = partial.decode("utf-8", errors="replace")
-            detail = f"\n{partial}" if partial else ""
-            return TestResult(
-                passed=False,
-                return_code=-1,
-                output=f"Tempo limite excedido após {timeout:g} segundos.{detail}",
-                summary="Execução interrompida por tempo limite",
+                cancel=cancel,
             )
         except FileNotFoundError as exc:
             return TestResult(
@@ -139,11 +125,23 @@ def run_tests(
                 output=f"Não foi possível iniciar os testes: {exc}",
                 summary="Falha ao iniciar pytest",
             )
+        if completed.timed_out or completed.cancelled:
+            message = (
+                "Execução cancelada."
+                if completed.cancelled
+                else f"Tempo limite excedido após {timeout:g} segundos."
+            )
+            output = f"{message}\n{completed.output}".encode("utf-8")[:1048576]
+            return TestResult(
+                passed=False, return_code=-1,
+                output=output.decode("utf-8", errors="ignore"),
+                summary="Execução cancelada" if completed.cancelled else "Execução interrompida por tempo limite",
+            )
         report_complete, summary, diagnostics = _pytest_report_details(report_path)
     return TestResult(
-        passed=completed.returncode == 0 and report_complete,
-        return_code=completed.returncode,
-        output=completed.stdout or "",
+        passed=completed.return_code == 0 and report_complete,
+        return_code=completed.return_code,
+        output=completed.output or "",
         summary=summary,
         diagnostics=diagnostics,
     )

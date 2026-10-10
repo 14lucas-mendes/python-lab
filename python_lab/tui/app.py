@@ -1,5 +1,6 @@
 from io import StringIO
 from pathlib import Path
+from threading import Event
 
 from rich.console import Console
 from rich.text import Text
@@ -8,6 +9,7 @@ from textual.app import App, ComposeResult
 from textual.containers import Horizontal, Vertical, VerticalScroll
 from textual.css.query import NoMatches
 from textual.widgets import Input, Label, Markdown, Static
+from textual.worker import get_current_worker
 
 from python_lab.app import ApplicationError, PythonLabApp
 from python_lab.learning import HintError, LearningError, PLAN_KEYS
@@ -48,6 +50,8 @@ class PythonLabTUI(App[None]):
         self.last_test_result: TestResult | None = None
         self.transcript_entries: list[str] = []
         self._testing = False
+        self._test_worker = None
+        self._test_started = Event()
         self._status_timer = None
         self.title = f"Python Lab {APP_VERSION}"
         self.sub_title = self._subtitle()
@@ -315,29 +319,49 @@ class PythonLabTUI(App[None]):
         next_step = self._next_step_bar()
         if next_step is not None:
             next_step.update("Próximo: executando testes...")
-        self.run_worker(
-            self._run_tests_worker,
+        started = self._test_started = Event()
+        self._test_worker = self.run_worker(
+            lambda: self._run_tests_worker(started),
             thread=True,
             exclusive=True,
             name="run-tests",
             exit_on_error=False,
         )
 
-    def _run_tests_worker(self) -> None:
-        try:
-            result = self.lab.run_current_tests()
-        except Exception as exc:
-            self.call_from_thread(self._on_tests_finished, None, exc)
+    def _run_tests_worker(self, started: Event) -> None:
+        started.set()
+        worker = get_current_worker()
+        if worker.is_cancelled:
+            self.call_from_thread(self._on_tests_finished, None, None, worker.cancelled_event)
             return
-        self.call_from_thread(self._on_tests_finished, result, None)
+        result = error = None
+        try:
+            result = self.lab.run_current_tests(cancel=worker.cancelled_event)
+        except Exception as exc:
+            error = exc
+        # Worker.cancel() sets the same Event even though cancelling Textual's
+        # executor future cannot stop this thread. The runner returns only after
+        # process-tree cleanup; only then may the UI release its action slot.
+        self.call_from_thread(
+            self._on_tests_finished, result, error, worker.cancelled_event
+        )
 
-    def _on_tests_finished(self, result: TestResult | None, error: Exception | None) -> None:
+    def _on_tests_finished(self, result: TestResult | None, error: Exception | None, cancel=None) -> None:
+        if cancel is not None and (
+            self._test_worker is None or cancel is not self._test_worker.cancelled_event
+        ):
+            return
+        self._test_worker = None
         self._testing = False
         composer = self._composer()
         if composer is not None:
             composer.disabled = False
             composer.placeholder = "Digite / para comandos"
             composer.focus()
+        if cancel is not None and cancel.is_set():
+            self._append_response("Execução cancelada.")
+            self._refresh_status()
+            return
         if error is not None:
             self._append_response(str(error))
             self.notify(str(error), severity="error")
@@ -392,6 +416,11 @@ class PythonLabTUI(App[None]):
         return f"{self.lab.goal.title} · missão {current}"
 
     def _refresh_status(self) -> None:
+        worker = self._test_worker
+        if worker is not None and worker.is_cancelled and not self._test_started.is_set():
+            # A cancelled executor future may never enter the thread at all.
+            # A thread entering later sees the set cancel event before running tests.
+            self._on_tests_finished(None, None, worker.cancelled_event)
         try:
             self._update_status()
         except ApplicationError as exc:
