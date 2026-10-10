@@ -25,7 +25,15 @@ class ConversationRepository:
             [{"path": source.path, "sha256": source.sha256} for source in request.snapshot.sources],
             ensure_ascii=False,
         )
-        response = json.dumps(asdict(answer), ensure_ascii=False)
+        # Free-form response fields can quote entire selected files or traceback
+        # lines. Keep a digest for correlation and only structured metadata.
+        response_bytes = json.dumps(asdict(answer), ensure_ascii=False).encode("utf-8")
+        response = json.dumps({
+            "sha256": hashlib.sha256(response_bytes).hexdigest(),
+            "assistance_level": answer.assistance_level,
+            "references": [asdict(reference) for reference in answer.references],
+            "usage": asdict(answer.usage),
+        }, ensure_ascii=False)
         try:
             with connection(self.database_path) as db:
                 db.execute("""CREATE TABLE IF NOT EXISTS conversations (

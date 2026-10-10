@@ -157,6 +157,28 @@ def test_history_binds_workspace_and_mode_without_source_text(tmp_path):
     assert first.sources[0].sha256 in stored[0][6]
 
 
+def test_history_excludes_provider_quotes_of_source_and_traceback(tmp_path):
+    source_line = 'private_marker = 1'
+    traceback_line = 'private_traceback_line = 2'
+    captured = snapshot(tmp_path, text=source_line + '\n')
+    answer = replace(
+        sample_answer(captured),
+        summary=source_line,
+        explanation=f'Consider: {traceback_line}',
+        steps=(source_line, traceback_line),
+    )
+    assistant, _, history = service(tmp_path, answer)
+    request = replace(sample_request(captured), traceback=traceback_line)
+
+    returned = asyncio.run(assistant.execute(request))
+
+    assert returned == answer
+    persisted = rows(history.database_path)[0][7]
+    assert source_line not in persisted
+    assert traceback_line not in persisted
+    assert 'references' in persisted and 'assistance_level' in persisted
+
+
 def test_history_uses_locally_allocated_id_and_reuses_it(tmp_path):
     captured = snapshot(tmp_path)
     history = ConversationRepository(tmp_path / 'assistant.sqlite3')
@@ -206,6 +228,79 @@ def test_cancelled_analysis_waits_for_worker_cleanup(tmp_path):
     assert not history.database_path.exists()
 
 
+def test_repeated_cancellation_waits_for_delayed_worker_cleanup(tmp_path):
+    captured = snapshot(tmp_path)
+    started = threading.Event()
+    release = threading.Event()
+    finished = threading.Event()
+
+    class SlowAnalysis:
+        def inspect(self, snapshot, *, typing=False, cancel=None):
+            started.set()
+            assert cancel.wait(5)
+            assert release.wait(5)
+            finished.set()
+            from python_lab.analysis import AnalysisCancelled
+            raise AnalysisCancelled('cancelled')
+
+    provider = RecordingProvider(sample_answer(captured))
+    history = ConversationRepository(tmp_path / 'assistant.sqlite3')
+    assistant = AssistantService(provider, SlowAnalysis(), history)
+
+    async def exercise():
+        task = asyncio.create_task(assistant.execute(sample_request(captured)))
+        assert await asyncio.to_thread(started.wait, 5)
+        try:
+            task.cancel()
+            await asyncio.sleep(0)
+            task.cancel()
+            await asyncio.sleep(0)
+            assert not task.done(), 'second cancellation released action before cleanup'
+        finally:
+            release.set()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+        assert finished.is_set()
+
+    asyncio.run(exercise())
+    assert provider.requests == []
+    assert not history.database_path.exists()
+
+
+def test_repeated_cancellation_preserves_cleanup_failure(tmp_path):
+    from python_lab.runtime.processes import ProcessCleanupError
+
+    captured = snapshot(tmp_path)
+    started = threading.Event()
+    release = threading.Event()
+
+    class FailedCleanup:
+        def inspect(self, snapshot, *, typing=False, cancel=None):
+            started.set()
+            assert cancel.wait(5)
+            assert release.wait(5)
+            raise ProcessCleanupError('descendant still running')
+
+    assistant = AssistantService(
+        RecordingProvider(sample_answer(captured)), FailedCleanup(),
+        ConversationRepository(tmp_path / 'assistant.sqlite3'),
+    )
+
+    async def exercise():
+        task = asyncio.create_task(assistant.execute(sample_request(captured)))
+        assert await asyncio.to_thread(started.wait, 5)
+        task.cancel()
+        await asyncio.sleep(0)
+        task.cancel()
+        await asyncio.sleep(0)
+        assert not task.done()
+        release.set()
+        with pytest.raises(AssistantError, match='descendant still running'):
+            await task
+
+    asyncio.run(exercise())
+
+
 def test_cancelled_analysis_waits_for_descendant_termination(tmp_path):
     from python_lab.analysis import AnalysisService
     from python_lab.runtime.processes import ProcessRunner
@@ -230,5 +325,49 @@ def test_cancelled_analysis_waits_for_descendant_termination(tmp_path):
 
     asyncio.run(exercise())
     assert_tree_stopped(tmp_path)
+    assert provider.requests == []
+    assert not history.database_path.exists()
+
+
+def test_repeated_cancellation_keeps_real_descendant_cleanup_boundary(tmp_path):
+    from python_lab.analysis import AnalysisService
+    from python_lab.runtime.processes import ProcessRunner
+    from tests.test_process_runner import assert_tree_stopped, tree_command, wait_for_file
+
+    captured = snapshot(tmp_path)
+    runner_cleaned = threading.Event()
+    release = threading.Event()
+    finished = threading.Event()
+
+    class DelayedTreeRunner(ProcessRunner):
+        def run(self, argv, cwd, **kwargs):
+            result = super().run(tree_command(tmp_path, closed_output=True), cwd, **kwargs)
+            runner_cleaned.set()
+            assert release.wait(5)
+            finished.set()
+            return result
+
+    provider = RecordingProvider(sample_answer(captured))
+    history = ConversationRepository(tmp_path / 'assistant.sqlite3')
+    assistant = AssistantService(provider, AnalysisService(runner=DelayedTreeRunner()), history)
+
+    async def exercise():
+        task = asyncio.create_task(assistant.execute(sample_request(captured)))
+        await asyncio.to_thread(wait_for_file, tmp_path / 'ready')
+        try:
+            task.cancel()
+            await asyncio.sleep(0)
+            task.cancel()
+            await asyncio.sleep(0)
+            assert not task.done(), 'second cancellation released action before process cleanup'
+            assert await asyncio.to_thread(runner_cleaned.wait, 5)
+            assert_tree_stopped(tmp_path)
+        finally:
+            release.set()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+        assert finished.is_set()
+
+    asyncio.run(exercise())
     assert provider.requests == []
     assert not history.database_path.exists()

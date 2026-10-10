@@ -40,12 +40,26 @@ class AssistantService:
             report = await asyncio.shield(worker)
         except asyncio.CancelledError:
             action_cancel.set()
-            try:
-                await asyncio.shield(worker)
-            except (AnalysisCancelled, AnalysisError):
-                pass
-            except ProcessCleanupError as exc:
-                raise AssistantError(f"Falha ao encerrar análise local: {exc}") from exc
+            # A second task.cancel() interrupts a shielded await too. Keep
+            # waiting until the worker has actually returned from process
+            # cleanup; only then may this action release its UI slot.
+            while True:
+                try:
+                    await asyncio.shield(worker)
+                except asyncio.CancelledError:
+                    if not worker.done():
+                        continue
+                    try:
+                        worker.result()
+                    except ProcessCleanupError as exc:
+                        raise AssistantError(f"Falha ao encerrar análise local: {exc}") from exc
+                    except (Exception, asyncio.CancelledError):
+                        pass
+                except ProcessCleanupError as exc:
+                    raise AssistantError(f"Falha ao encerrar análise local: {exc}") from exc
+                except Exception:
+                    pass
+                break
             raise
         except AnalysisCancelled as exc:
             raise asyncio.CancelledError() from exc
