@@ -23,6 +23,41 @@ class ProcessResult:
     truncated: bool
 
 
+def _linux_process_has_live_tasks(process: Path) -> bool:
+    """A zombie leader may still own live pthreads; inspect its task group."""
+    tasks = process / "task"
+    try:
+        members = list(tasks.iterdir())
+    except (FileNotFoundError, ProcessLookupError):
+        if (process / "stat").exists():
+            raise OSError(f"Linux task directory unavailable for {process.name}")
+        return False  # The entire process disappeared during inspection.
+    stopped = set()
+    for task in members:
+        try:
+            state = (task / "stat").read_text().rsplit(") ", 1)[1].split()[0]
+        except (FileNotFoundError, ProcessLookupError):
+            if task.exists():
+                raise OSError(f"Linux task state unavailable for {task.name}")
+            continue  # This task disappeared, rather than becoming unreadable.
+        if state not in {"Z", "X"}:
+            return True
+        stopped.add(task.name)
+    try:
+        remaining = {task.name for task in tasks.iterdir()}
+    except (FileNotFoundError, ProcessLookupError):
+        if (process / "stat").exists():
+            raise OSError(f"Linux task directory unavailable for {process.name}")
+        return False
+    if not remaining:
+        if (process / "stat").exists():
+            raise OSError(f"Linux task inspection incomplete for {process.name}")
+        return False
+    # A worker may have spawned a new task while enumeration was in progress.
+    # Do not confirm termination until every remaining task was seen stopped.
+    return not remaining.issubset(stopped)
+
+
 def _posix_group_has_live_members(pgid: int) -> bool:
     """Inspect group membership independently of parent exit and output EOF."""
     if sys.platform.startswith("linux"):
@@ -36,8 +71,9 @@ def _posix_group_has_live_members(pgid: int) -> bool:
             except (FileNotFoundError, ProcessLookupError):
                 continue  # Exited between enumeration and inspection.
             fields = stat.rsplit(") ", 1)[1].split()
-            if int(fields[2]) == pgid and fields[0] not in {"Z", "X"}:
-                return True
+            if int(fields[2]) == pgid:
+                if fields[0] not in {"Z", "X"} or _linux_process_has_live_tasks(entry):
+                    return True
         return False
     # Other POSIX systems provide execution state through ps rather than /proc.
     listing = subprocess.run(

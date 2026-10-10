@@ -240,3 +240,144 @@ def test_runner_never_returns_success_when_group_cleanup_cannot_be_confirmed(tmp
     monkeypatch.setattr(processes, "_wait_for_posix_group", unavailable)
     with pytest.raises(OSError, match="cleanup confirmation failure"):
         runner().run([sys.executable, "-c", "pass"], tmp_path)
+
+
+def native_zombie_leader_command(tmp_path):
+    import shutil
+    import subprocess
+    compiler = shutil.which("cc")
+    assert compiler, "Native pthread regression requires a C compiler"
+    source = tmp_path / "threaded_child.c"
+    source.write_text(r'''
+#include <pthread.h>
+#include <stdio.h>
+#include <unistd.h>
+#include <sys/syscall.h>
+
+static void *worker(void *unused) {
+    FILE *ready = fopen("ready", "w");
+    if (!ready) _exit(2);
+    fprintf(ready, "%d %ld", getpid(), syscall(SYS_gettid));
+    fclose(ready);
+    while (access("release", F_OK) != 0) usleep(10000);
+    FILE *leak = fopen("leaked", "w");
+    if (leak) fclose(leak);
+    for (;;) usleep(10000);
+    return NULL;
+}
+
+int main(void) {
+    pthread_t thread;
+    if (pthread_create(&thread, NULL, worker, NULL) != 0) return 3;
+    pthread_exit(NULL);
+}
+''')
+    executable = tmp_path / "threaded_child"
+    subprocess.run([compiler, "-pthread", str(source), "-o", str(executable)], check=True, capture_output=True)
+    parent = (
+        "import subprocess, time\nfrom pathlib import Path\n"
+        f"child = subprocess.Popen([{str(executable)!r}], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)\n"
+        "while not Path('ready').exists(): time.sleep(.01)\n"
+        "while Path(f'/proc/{child.pid}/stat').read_text().rsplit(') ', 1)[1].split()[0] != 'Z': time.sleep(.01)\n"
+        "Path('leader_exited').touch()\n"
+        "while not Path('parent_release').exists(): time.sleep(.01)\n"
+    )
+    return [sys.executable, "-c", parent]
+
+
+def linux_task_state(path):
+    try:
+        return path.read_text().rsplit(") ", 1)[1].split()[0]
+    except (FileNotFoundError, ProcessLookupError):
+        return None
+
+
+@pytest.mark.skipif(not sys.platform.startswith("linux"), reason="Linux zombie leader and live pthread regression")
+def test_zombie_leader_with_live_worker_delays_cleanup_completion(tmp_path, monkeypatch):
+    import python_lab.runtime.processes as processes
+    from concurrent.futures import TimeoutError
+    actual_killpg = os.killpg
+    requested = threading.Event()
+    group = []
+
+    def delay_signal(pgid, sig):
+        group.append((pgid, sig))
+        requested.set()
+
+    monkeypatch.setattr(processes.os, "killpg", delay_signal)
+    with ThreadPoolExecutor() as pool:
+        future = pool.submit(runner().run, native_zombie_leader_command(tmp_path), tmp_path)
+        try:
+            wait_for_file(tmp_path / "leader_exited")
+            pid, tid = map(int, (tmp_path / "ready").read_text().split())
+            leader = Path(f"/proc/{pid}/stat")
+            task = Path(f"/proc/{pid}/task/{tid}/stat")
+            assert linux_task_state(leader) == "Z"
+            assert linux_task_state(task) not in {None, "Z", "X"}
+            (tmp_path / "parent_release").touch()
+            assert requested.wait(5), "Cleanup never requested termination"
+            with pytest.raises(TimeoutError):
+                future.result(timeout=.2)
+            assert linux_task_state(task) not in {None, "Z", "X"}
+        finally:
+            for pgid, sig in group:
+                try:
+                    actual_killpg(pgid, sig)
+                except ProcessLookupError:
+                    pass
+            if not group:
+                (tmp_path / "parent_release").touch()
+                # Permit the cleanup request after a failed readiness assertion.
+                if requested.wait(5):
+                    for pgid, sig in group:
+                        actual_killpg(pgid, sig)
+            future.result(timeout=5)
+    assert linux_task_state(task) in {None, "Z", "X"}
+    (tmp_path / "release").touch()
+    assert not (tmp_path / "leaked").exists()
+
+
+@pytest.mark.skipif(not sys.platform.startswith("linux"), reason="Linux genuine zombie confirmation")
+def test_genuine_zombie_with_no_live_tasks_is_stopped(tmp_path):
+    import subprocess
+    import python_lab.runtime.processes as processes
+    child = subprocess.Popen([sys.executable, "-c", "pass"], start_new_session=True,
+                             stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    try:
+        deadline = time.monotonic() + 5
+        stat = Path(f"/proc/{child.pid}/stat")
+        while linux_task_state(stat) != "Z" and time.monotonic() < deadline:
+            time.sleep(.01)
+        assert linux_task_state(stat) == "Z", "Child did not become a genuine zombie"
+        assert {linux_task_state(task / "stat") for task in Path(f"/proc/{child.pid}/task").iterdir()} == {"Z"}
+        processes._wait_for_posix_group(child.pid, timeout=.05)
+    finally:
+        child.wait(timeout=5)
+
+
+@pytest.mark.skipif(not sys.platform.startswith("linux"), reason="Linux complete task inspection")
+@pytest.mark.parametrize("uncertainty", ["missing_directory", "empty_directory", "missing_stat", "unreadable_stat"])
+def test_zombie_leader_incomplete_task_inspection_is_cleanup_error(tmp_path, monkeypatch, uncertainty):
+    import python_lab.runtime.processes as processes
+    proc = tmp_path / "1234"
+    proc.mkdir()
+    (proc / "stat").write_text("1234 (zombie leader) Z 1 999 0")
+    tasks = proc / "task"
+    if uncertainty != "missing_directory":
+        tasks.mkdir()
+    if uncertainty in {"missing_stat", "unreadable_stat"}:
+        task = tasks / "1235"
+        task.mkdir()
+        if uncertainty == "unreadable_stat":
+            (task / "stat").write_text("1235 (worker) S 1 999 0")
+            original_read = Path.read_text
+
+            def read(path, *args, **kwargs):
+                if path == task / "stat":
+                    raise PermissionError("task state unavailable")
+                return original_read(path, *args, **kwargs)
+
+            monkeypatch.setattr(Path, "read_text", read)
+    monkeypatch.setattr(processes, "Path", lambda value: tmp_path if value == "/proc" else Path(value))
+    with pytest.raises(processes.ProcessCleanupError, match="could not confirm termination"):
+        processes._wait_for_posix_group(999, timeout=.02)
