@@ -87,6 +87,48 @@ class WorkspaceSnapshot:
 
 
 @dataclass(frozen=True)
+class FileChange:
+    path: str
+    before_sha256: str
+    after_text: str
+
+    def __post_init__(self) -> None:
+        _source_path(self.path)
+        if not isinstance(self.before_sha256, str) or len(self.before_sha256) != 64 or any(
+            char not in "0123456789abcdef" for char in self.before_sha256
+        ):
+            raise AssistantError("Hash SHA-256 inválido.")
+        encoded = _text_bytes(self.after_text, "Alteração")
+        if len(encoded) > MAX_SOURCE_BYTES:
+            raise AssistantError("Alteração excede 32768 bytes.")
+        if any(ord(char) < 32 and char not in "\t\n\r" for char in self.after_text):
+            raise AssistantError("Alteração binária não é permitida.")
+
+
+@dataclass(frozen=True)
+class PatchProposal:
+    id: str
+    change: FileChange
+    reason: str
+    selected_paths: tuple[str, ...]
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.id, str) or not self.id or len(_text_bytes(self.id, "ID")) > 128:
+            raise AssistantError("ID de proposta inválido.")
+        if not isinstance(self.change, FileChange):
+            raise AssistantError("Alteração inválida.")
+        _text_bytes(self.reason, "Motivo")
+        if not isinstance(self.selected_paths, tuple) or not self.selected_paths or len(self.selected_paths) > MAX_SOURCE_FILES:
+            raise AssistantError("Seleção de fontes inválida.")
+        for path in self.selected_paths:
+            _source_path(path)
+        if len(set(self.selected_paths)) != len(self.selected_paths):
+            raise AssistantError("Fontes selecionadas duplicadas.")
+        if self.change.path not in self.selected_paths:
+            raise AssistantError("Destino não pertence às fontes selecionadas.")
+
+
+@dataclass(frozen=True)
 class CodeReference:
     path: str
     start_line: int

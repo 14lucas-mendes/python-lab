@@ -7,7 +7,9 @@ from python_lab.assistant.models import (
     AssistantMode,
     AssistantRequest,
     CodeReference,
+    FileChange,
     LLMProvider,
+    PatchProposal,
     SourceFile,
     Usage,
     WorkspaceSnapshot,
@@ -16,6 +18,6 @@ from python_lab.assistant.models import (
 
 __all__ = [
     "Action", "AssistantAnswer", "AssistantError", "AssistantMode", "AssistantRequest",
-    "CodeReference", "ContextError", "LLMProvider", "SourceFile", "Usage",
+    "CodeReference", "ContextError", "FileChange", "LLMProvider", "PatchProposal", "SourceFile", "Usage",
     "WorkspaceSnapshot", "validate_answer",
 ]
