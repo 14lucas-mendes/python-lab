@@ -65,7 +65,23 @@ jobs:
       - name: Base assistant and classic checks without optional extras
         shell: bash
         run: |
-          "$PYTHON" -m pytest -q tests/test_assistant_cli.py tests/test_assistant_tui.py tests/test_assistant_journey.py tests/test_review_cli.py tests/test_review_tui.py tests/test_scaffolding_cli.py tests/test_cli_entrypoint.py::test_classic_without_assistant_extra
+          base_log="$RUNNER_TEMP/python-lab-base-assistant.log"
+          if "$PYTHON" -m pytest -q tests/test_assistant_cli.py tests/test_assistant_tui.py tests/test_assistant_journey.py tests/test_review_cli.py tests/test_review_tui.py tests/test_scaffolding_cli.py tests/test_review_adapter_failures.py tests/test_cli_entrypoint.py::test_classic_without_assistant_extra > "$base_log" 2>&1; then
+            cat "$base_log"
+          else
+            base_status=$?
+            cat "$base_log"
+            diagnostic="$(cat "$base_log")"
+            if (( ${#diagnostic} > 6000 )); then
+              diagnostic="${diagnostic: -6000}"
+            fi
+            diagnostic="base pytest exit: $base_status"$'\n'"$diagnostic"
+            diagnostic="${diagnostic//%/%25}"
+            diagnostic="${diagnostic//$'\r'/%0D}"
+            diagnostic="${diagnostic//$'\n'/%0A}"
+            printf '::error title=Native base assistant suite::%s\n' "$diagnostic"
+            exit "$base_status"
+          fi
       - name: Install optional local analysis with tested constraints
         shell: bash
         run: |
@@ -79,7 +95,7 @@ jobs:
       - name: Offline official SDK and analysis adapter proofs
         shell: bash
         run: |
-          "$PYTHON" -m pytest -q tests/test_analysis.py tests/test_assistant_provider.py tests/test_assistant_cli.py tests/test_assistant_tui.py tests/test_assistant_journey.py tests/test_review_cli.py tests/test_review_tui.py tests/test_scaffolding_cli.py
+          "$PYTHON" -m pytest -q tests/test_analysis.py tests/test_assistant_provider.py tests/test_assistant_cli.py tests/test_assistant_tui.py tests/test_assistant_journey.py tests/test_review_cli.py tests/test_review_tui.py tests/test_scaffolding_cli.py tests/test_review_adapter_failures.py
       - name: Native PowerShell installer validation
         if: runner.os == 'Windows'
         shell: pwsh

@@ -79,6 +79,14 @@ class AssistantCommands:
     def _error(exc, kind="usage"):
         return CommandResult(False, str(exc), {"error_kind": kind})
 
+    @classmethod
+    def _operation_error(cls, exc):
+        # Services retain the operational cause without changing their public
+        # validation errors. Classify only at the actual operation boundary.
+        operational = isinstance(exc, OSError) or isinstance(
+            exc.__cause__, (OSError, TypeError, ValueError))
+        return cls._error(exc, "execution" if operational else "usage")
+
     async def review(self, args, *, cancel=None):
         action_cancel = cancel or threading.Event()
         try:
@@ -140,15 +148,20 @@ class AssistantCommands:
             def write():
                 if action_cancel.is_set():
                     raise asyncio.CancelledError()
-                applied = self.patches.apply(patch, confirmed=True)
+                self.patches.apply(patch, confirmed=True)
                 if mission_id is not None:
-                    self.app.record_full_solution(mission_id)
-                return applied
+                    try:
+                        self.app.record_full_solution(mission_id)
+                    except (ApplicationError, ProgressError, OSError) as exc:
+                        return CommandResult(False, f"Arquivo aplicado; falha ao registrar ajuda: {exc}",
+                                             {**data, "error_kind": "execution", "applied": True})
+                return None
             try:
-                await self._blocking(write, action_cancel)
-            except (ApplicationError, ProgressError) as exc:
-                return CommandResult(False, f"Arquivo aplicado; falha ao registrar ajuda: {exc}",
-                                     {**data, "error_kind": "execution", "applied": True})
+                recording_failure = await self._blocking(write, action_cancel)
+            except (AssistantError, OSError) as exc:
+                return self._operation_error(exc)
+            if recording_failure is not None:
+                return recording_failure
             return CommandResult(True, f"Destino: {destination}\n{diff}\nAplicado; não verificado. Próximo: /verify {patch.id} --check ast.", data)
         except (ValueError, AssistantError, ContextError) as exc:
             return self._error(exc)
@@ -168,8 +181,11 @@ class AssistantCommands:
             if self.patches is None or self.verification is None:
                 raise AssistantError("Serviço de verificação indisponível.")
             patch = await self._blocking(lambda: self.patches.load(args[0]), action_cancel)
-            result = await self._blocking(lambda: self.verification.run(
-                patch, self.workspace, checks=checks, cancel=action_cancel), action_cancel)
+            try:
+                result = await self._blocking(lambda: self.verification.run(
+                    patch, self.workspace, checks=checks, cancel=action_cancel), action_cancel)
+            except (AssistantError, OSError) as exc:
+                return self._operation_error(exc)
             data = {**asdict(result), "id": patch.id, "root": str(self.workspace.root)}
             lines = [f"Projeto: {self.workspace.root}", f"Verificação: {result.status}"]
             lines.extend(f"{item.name}: {item.status} · {item.detail}" for item in result.checks)
@@ -193,7 +209,15 @@ class AssistantCommands:
             if not name or Path(name).name != name or "/" in name or "\\" in name:
                 raise ValueError("Nome deve ser apenas o nome do novo projeto.")
             target = Path(parent).expanduser().resolve() / name
-            result = await self._blocking(lambda: ScaffoldService().create(template, target), action_cancel)
+            try:
+                result = await self._blocking(lambda: ScaffoldService().create(template, target), action_cancel)
+            except AssistantError as exc:
+                # An exclusively created target can lose a race to another
+                # creator; that existing destination remains a usage rejection.
+                cause = exc.__cause__
+                if isinstance(cause, FileExistsError) and cause.filename == str(target):
+                    return self._error(exc)
+                return self._operation_error(exc)
             data = {"target": str(result.target), "files": [str(path) for path in result.files],
                     "template": result.template}
             lines = [f"Projeto criado: {result.target}", *data["files"],
@@ -203,6 +227,8 @@ class AssistantCommands:
             return CommandResult(True, "\n".join(lines), data)
         except (ValueError, AssistantError, ContextError) as exc:
             return self._error(exc)
+        except OSError as exc:
+            return self._error(exc, "execution")
 
     def _service(self) -> AssistantService:
         if self.service is None and self.service_factory is not None:
