@@ -24,9 +24,24 @@ python-lab = "python_lab.cli:main"
 
 [tool.setuptools.packages.find]
 include = ["python_lab*"]
+exclude = ["python_lab.scaffolding.templates*"]
 
 [tool.setuptools.package-data]
 "python_lab.tui" = ["*.tcss"]
+"python_lab.scaffolding" = [
+    "templates/cli/pyproject.toml",
+    "templates/cli/README.md",
+    "templates/cli/.gitignore",
+    "templates/cli/src/__package__/__init__.py",
+    "templates/cli/src/__package__/main.py",
+    "templates/cli/tests/test_app.py",
+    "templates/fastapi/pyproject.toml",
+    "templates/fastapi/README.md",
+    "templates/fastapi/.gitignore",
+    "templates/fastapi/src/__package__/__init__.py",
+    "templates/fastapi/src/__package__/main.py",
+    "templates/fastapi/tests/test_app.py",
+]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

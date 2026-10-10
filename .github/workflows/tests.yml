@@ -119,3 +119,25 @@ jobs:
             printf '::error title=Native pytest suite::%s\n' "$diagnostic"
             exit "$suite_status"
           fi
+      - name: Clean-venv template preparation and functional smoke
+        shell: bash
+        env:
+          PYTHON_LAB_TEMPLATE_SMOKE: '1'
+        run: |
+          smoke_log="$RUNNER_TEMP/python-lab-template-smoke.log"
+          if "$PYTHON" -m pytest tests/test_template_smoke.py -q -s > "$smoke_log" 2>&1; then
+            cat "$smoke_log"
+          else
+            smoke_status=$?
+            cat "$smoke_log"
+            diagnostic="$(cat "$smoke_log")"
+            if (( ${#diagnostic} > 6000 )); then
+              diagnostic="${diagnostic: -6000}"
+            fi
+            diagnostic="template smoke exit: $smoke_status"$'\n'"$diagnostic"
+            diagnostic="${diagnostic//%/%25}"
+            diagnostic="${diagnostic//$'\r'/%0D}"
+            diagnostic="${diagnostic//$'\n'/%0A}"
+            printf '::error title=Clean-venv template smoke::%s\n' "$diagnostic"
+            exit "$smoke_status"
+          fi

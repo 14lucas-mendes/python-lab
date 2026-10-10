@@ -189,3 +189,26 @@ python3 -m venv .venv
 No Windows, use `.venv\Scripts\python.exe` e `.venv\Scripts\lab.exe`. `constraints/dev.txt` foi gerado no ambiente Linux Python 3.12, mantendo os limites declarados em `pyproject.toml`; as quatro células do workflow verificam instalação editável e suíte completa em Ubuntu/Windows com Python 3.11/3.12. Os testes incluem as 11 referências, jornadas reais 001/006, entrada/saída da TUI e cancelamento de árvores de processos. Ubuntu precisa de `cc` para a regressão nativa de threads. No Windows, o job também executa PowerShell e testa validação, falhas e idempotência do instalador, restaurando o PATH do usuário.
 
 O workflow primeiro prova ajuda, versão e missão clássica sem extras; depois instala os extras opcionais de análise e SDK oficial sob as constraints e roda provas offline com mocks. A existência do workflow não confirma uma execução: os resultados de cada célula dependem do CI. Não é necessário instalar SDK de assistente para ajuda, versão, missões, prática clássica ou `check`.
+
+Os scaffolds curados `cli` e `fastapi` estão disponíveis pela API
+`ScaffoldService().create(template, Path(destino))`, em `python_lab.scaffolding`.
+O destino deve ser inexistente e ter nome Python válido (hífens viram underscores
+no pacote). A geração lê recursos empacotados e só cria arquivos: instalação e
+execução ficam nos comandos Linux/Windows do README gerado.
+
+A suíte normal mantém a geração offline e pula os dois smokes que instalam
+projetos. Para validar o artefato suportado (checkout instalado em modo editável),
+execute separadamente a preparação e os testes funcionais em um venv novo por
+template; esse comando acessa o índice de pacotes na instalação:
+
+```bash
+PYTHON_LAB_TEMPLATE_SMOKE=1 .venv/bin/python -m pytest tests/test_template_smoke.py -q -s
+```
+
+No PowerShell, defina `$env:PYTHON_LAB_TEMPLATE_SMOKE = "1"` e use
+`.venv\Scripts\python.exe -m pytest tests/test_template_smoke.py -q -s`.
+O CI executa esse estágio separado com `constraints/template-smoke.txt`, sem
+adicionar dependências de framework ao runtime obrigatório do Lab. Os smokes
+verificam a saudação CLI e `GET /health` com cliente interno, sem chaves ou
+requisições externas após a instalação. A execução independente de um wheel do
+Lab ainda não é coberta: o catálogo de missões exige o checkout editável.
