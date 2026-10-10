@@ -40,11 +40,12 @@ class PatchService:
         path.chmod(0o700)
 
     @staticmethod
-    def _private_file(fd: int, path: Path) -> None:
-        if os.name == "posix":
-            os.fchmod(fd, 0o600)
+    def _set_file_mode(fd: int, path: Path, mode: int) -> None:
+        fchmod = getattr(os, "fchmod", None)
+        if fchmod is not None:
+            fchmod(fd, mode)
         else:
-            path.chmod(0o600)
+            path.chmod(mode)
 
     def _record_path(self, proposal_id: str) -> Path:
         if not isinstance(proposal_id, str) or not proposal_id:
@@ -104,7 +105,7 @@ class PatchService:
             fd, name = tempfile.mkstemp(prefix=".python-lab-proposal-", dir=path.parent)
             temporary = Path(name)
             with os.fdopen(fd, "w", encoding="utf-8") as stream:
-                self._private_file(stream.fileno(), temporary)
+                self._set_file_mode(stream.fileno(), temporary, 0o600)
                 json.dump(payload, stream, ensure_ascii=False)
                 stream.flush()
                 os.fsync(stream.fileno())
@@ -154,7 +155,7 @@ class PatchService:
             fd = os.open(backup_path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
             backup_created = True
             with os.fdopen(fd, "wb") as backup:
-                self._private_file(backup.fileno(), backup_path)
+                self._set_file_mode(backup.fileno(), backup_path, 0o600)
                 backup.write(old_bytes)
                 backup.flush()
                 os.fsync(backup.fileno())
@@ -171,7 +172,7 @@ class PatchService:
             with os.fdopen(fd, "wb") as temp:
                 temp.write(new_bytes)
                 temp.flush()
-                os.fchmod(temp.fileno(), mode)
+                self._set_file_mode(temp.fileno(), temp_path, mode)
                 os.fsync(temp.fileno())
             # Recheck after both backup and temporary write, immediately before rename.
             self._saved(proposal)

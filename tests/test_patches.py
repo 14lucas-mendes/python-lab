@@ -234,3 +234,17 @@ def test_state_child_symlink_cannot_redirect_private_content(tmp_path, directory
             service.apply(proposal, confirmed=True)
     assert list(outside.iterdir()) == []
     assert source.read_bytes() == b"x=1\n"
+
+
+def test_apply_without_fchmod_preserves_bytes_and_destination_mode(tmp_path, monkeypatch):
+    source, service, proposal = setup_patch(tmp_path, before=b"old\r\n", after="new\n")
+    source.chmod(0o640)
+    monkeypatch.delattr(os, "fchmod", raising=False)
+    assert service.apply(proposal, confirmed=True) == source
+    assert source.read_bytes() == b"new\n"
+    backups = list((tmp_path / "state" / "backups").iterdir())
+    assert len(backups) == 1
+    assert backups[0].read_bytes() == b"old\r\n"
+    if os.name == "posix":
+        assert stat.S_IMODE(source.stat().st_mode) == 0o640
+        assert stat.S_IMODE(backups[0].stat().st_mode) == 0o600
