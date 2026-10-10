@@ -379,6 +379,74 @@ def test_cancelling_pending_worker_restores_composer(app):
     _drive(app, scenario)
 
 
+def test_immediate_test_quit_skips_queued_worker_and_exits(app, monkeypatch):
+    import time
+
+    app.start("001")
+    app.save_plan(dict(input="x", output="y", steps="z", risks="w"))
+    calls = []
+    monkeypatch.setattr(app, "run_current_tests", lambda **kwargs: calls.append(kwargs))
+
+    async def scenario(tui, pilot):
+        # Both actions happen before the event loop can schedule the worker.
+        tui._submit("/test")
+        tui.action_quit_lab()
+        deadline = time.monotonic() + 2
+        while not tui._exit and time.monotonic() < deadline:
+            await asyncio.sleep(.01)
+        assert tui._exit, "Queued test cancellation never completed exit"
+        assert tui._test_cleanup_done.is_set()
+        assert not tui._testing
+        assert not calls, "Cancelled queued test started a subprocess"
+        assert app.current_progress().attempts == 0
+
+    _drive(app, scenario)
+
+
+def test_quit_waits_when_test_thread_is_scheduled_but_not_entered(app, monkeypatch):
+    import threading
+    import time
+
+    app.start("001")
+    app.save_plan(dict(input="x", output="y", steps="z", risks="w"))
+    entered = threading.Event()
+    release = threading.Event()
+    calls = []
+    original = PythonLabTUI._run_tests_worker
+
+    def delayed_start(tui, *args):
+        entered.set()
+        assert release.wait(5), "Start barrier was not released"
+        return original(tui, *args)
+
+    monkeypatch.setattr(PythonLabTUI, "_run_tests_worker", delayed_start)
+    monkeypatch.setattr(app, "run_current_tests", lambda **kwargs: calls.append(kwargs))
+
+    async def scenario(tui, pilot):
+        tui._submit("/test")
+        deadline = time.monotonic() + 2
+        while not entered.is_set() and time.monotonic() < deadline:
+            await asyncio.sleep(.01)
+        assert entered.is_set(), "Test thread was not scheduled"
+        assert not tui._test_started.is_set()
+        try:
+            tui.action_quit_lab()
+            await asyncio.sleep(.05)
+            assert not tui._exit, "Exited while the test thread could still start"
+            assert tui._testing
+            assert tui.query_one("#composer", Composer).disabled
+        finally:
+            release.set()
+        deadline = time.monotonic() + 2
+        while not tui._exit and time.monotonic() < deadline:
+            await asyncio.sleep(.01)
+        assert tui._exit
+        assert tui._test_cleanup_done.is_set()
+        assert not calls, "Cancelled test entered the runner"
+
+    _drive(app, scenario)
+
+
 @pytest.mark.parametrize("phase", ["save", "callback"])
 @pytest.mark.parametrize("save_error", [False, True])
 def test_late_worker_cancel_preserves_accepted_completion(app, monkeypatch, phase, save_error):

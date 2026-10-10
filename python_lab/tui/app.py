@@ -1,5 +1,6 @@
 from importlib import metadata
 import asyncio
+from concurrent.futures import Future, ThreadPoolExecutor
 from io import StringIO
 import shlex
 from pathlib import Path
@@ -13,7 +14,7 @@ from textual.binding import Binding
 from textual.containers import Horizontal, Vertical, VerticalScroll
 from textual.css.query import NoMatches
 from textual.widgets import Button, Input, Label, Markdown, Static
-from textual.worker import get_current_worker
+from textual.worker import Worker, WorkerCancelled, WorkerFailed, get_current_worker
 
 from python_lab.app import ApplicationError, PythonLabApp
 from python_lab.assistant.commands import AssistantCommands
@@ -73,6 +74,8 @@ class PythonLabTUI(App[None]):
         self.transcript_entries: list[str] = []
         self._testing = False
         self._test_worker = None
+        self._test_executor: ThreadPoolExecutor | None = None
+        self._test_future: Future | None = None
         self._test_started = Event()
         self._test_cleanup_done = Event()
         self._test_exiting = False
@@ -124,8 +127,7 @@ class PythonLabTUI(App[None]):
     async def on_unmount(self) -> None:
         if self._testing and self._test_worker is not None:
             self._test_worker.cancel()
-            if self._test_started.is_set():
-                await asyncio.to_thread(self._test_cleanup_done.wait)
+            await asyncio.to_thread(self._test_cleanup_done.wait)
         if self._assistant_task is not None:
             self._assistant_exiting = False
             self._assistant_cancel.set()
@@ -488,19 +490,51 @@ class PythonLabTUI(App[None]):
         next_step = self._next_step_bar()
         if next_step is not None:
             next_step.update("Próximo: executando testes...")
-        started = self._test_started = Event()
+        self._test_started = Event()
         self._test_cleanup_done = Event()
+        self._test_future = None
+        self._test_executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="lab-tests")
         self._test_worker = self.run_worker(
-            lambda: self._run_tests_worker(started),
-            thread=True,
+            self._run_tests_async,
             exclusive=True,
             name="run-tests",
             exit_on_error=False,
         )
+        asyncio.create_task(self._watch_test_worker(self._test_worker))
 
-    def _run_tests_worker(self, started: Event) -> None:
-        started.set()
+    async def _run_tests_async(self) -> None:
         worker = get_current_worker()
+        assert self._test_executor is not None
+        future = self._test_executor.submit(self._run_tests_worker, self._test_started, worker)
+        self._test_future = future
+        await asyncio.wrap_future(future)
+
+    async def _watch_test_worker(self, worker: Worker) -> None:
+        try:
+            await worker.wait()
+        except (WorkerCancelled, WorkerFailed):
+            pass
+        if worker is not self._test_worker:
+            return
+        future = self._test_future
+        # A cancelled concurrent Future cannot subsequently enter its callable.
+        # A running Future may not have set _test_started yet, so its callback
+        # remains the only proof that runner cleanup has finished.
+        if future is None:
+            error = worker.error if isinstance(worker.error, Exception) and not worker.is_cancelled else None
+            self._test_cleanup_done.set()
+            self._on_tests_finished(None, error, worker.cancelled_event)
+        elif future.cancel():
+            self._test_cleanup_done.set()
+            self._on_tests_finished(None, None, worker.cancelled_event)
+        elif future.done():
+            error = future.exception()
+            if error is not None:
+                self._test_cleanup_done.set()
+                self._on_tests_finished(None, error, worker.cancelled_event)
+
+    def _run_tests_worker(self, started: Event, worker: Worker) -> None:
+        started.set()
         if worker.is_cancelled:
             self._test_cleanup_done.set()
             self.call_from_thread(self._on_tests_finished, None, None, worker.cancelled_event)
@@ -526,6 +560,11 @@ class PythonLabTUI(App[None]):
             self._test_worker is None or cancel is not self._test_worker.cancelled_event
         ):
             return
+        executor = self._test_executor
+        self._test_executor = None
+        self._test_future = None
+        if executor is not None:
+            executor.shutdown(wait=False, cancel_futures=True)
         self._test_worker = None
         self._testing = False
         composer = self._composer()
@@ -603,11 +642,6 @@ class PythonLabTUI(App[None]):
         return f"{self.lab.goal.title} · missão {current}"
 
     def _refresh_status(self) -> None:
-        worker = self._test_worker
-        if worker is not None and worker.is_cancelled and not self._test_started.is_set():
-            # A cancelled executor future may never enter the thread at all.
-            # A thread entering later sees the set cancel event before running tests.
-            self._on_tests_finished(None, None, worker.cancelled_event)
         try:
             self._update_status()
         except ApplicationError as exc:
