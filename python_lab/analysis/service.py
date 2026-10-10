@@ -3,6 +3,7 @@
 import ast
 import hashlib
 import json
+import os
 from pathlib import Path
 import re
 import stat
@@ -28,6 +29,42 @@ class AnalysisCancelled(AnalysisError):
 def _cancelled(cancel: threading.Event | None) -> None:
     if cancel is not None and cancel.is_set():
         raise AnalysisCancelled("Análise cancelada.")
+
+
+def _temporary_parents() -> list[str]:
+    # Enumerate only: gettempdir() probes candidates by writing a file, which
+    # would violate read-only inspection if an environment path is in-project.
+    candidates = [value for name in ("TMPDIR", "TEMP", "TMP") if (value := os.getenv(name))]
+    if tempfile.tempdir is not None:
+        candidates.append(os.fsdecode(tempfile.tempdir))
+    if os.name == "nt":
+        candidates.extend([
+            os.path.expanduser(r"~\AppData\Local\Temp"),
+            os.path.expandvars(r"%SYSTEMROOT%\Temp"),
+            r"C:\temp", r"C:\tmp", r"\temp", r"\tmp",
+        ])
+    else:
+        candidates.extend(["/tmp", "/var/tmp", "/usr/tmp"])
+    candidates.append(os.getcwd())
+    return candidates
+
+
+def _external_temporary_directory(root: Path, cancel: threading.Event | None) -> tempfile.TemporaryDirectory:
+    for candidate in _temporary_parents():
+        _cancelled(cancel)
+        try:
+            parent = Path(candidate).resolve(strict=True)
+            # Resolve and reject containment before *any* allocation or writable
+            # probe. In particular, a symlink to the project is not external.
+            if parent.is_relative_to(root) or not parent.is_dir():
+                continue
+            if not os.access(parent, os.W_OK | os.X_OK):
+                continue
+            return tempfile.TemporaryDirectory(prefix="python-lab-analysis-", dir=parent)
+        except (OSError, RuntimeError, ValueError):
+            continue  # Try another external location if allocation is denied.
+    _cancelled(cancel)
+    raise AnalysisError("Não há diretório temporário disponível fora do workspace.")
 
 
 def _unchanged(snapshot: WorkspaceSnapshot, sources: tuple[SourceFile, ...]) -> None:
@@ -124,7 +161,7 @@ class AnalysisService:
         if typing:
             # Both config and cache stay outside the selected project. Never load
             # project plugins or traverse project imports for type checking.
-            with tempfile.TemporaryDirectory(prefix="python-lab-analysis-") as directory:
+            with _external_temporary_directory(snapshot.root, cancel) as directory:
                 config = Path(directory) / "mypy.ini"
                 config.write_text("[mypy]\nplugins =\n", encoding="utf-8")
                 typed = self._run("mypy", ["--config-file", str(config), "--no-incremental",

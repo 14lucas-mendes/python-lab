@@ -1,4 +1,6 @@
 import json
+import os
+import tempfile
 from importlib.metadata import PackageNotFoundError, version
 import sys
 import threading
@@ -108,6 +110,132 @@ def test_mypy_not_requested(tmp_path):
     runner = FakeRunner([result(0, "[]"), result()])
     report = service(runner=runner).inspect(snapshot(tmp_path))
     assert [check.tool for check in report.checks] == ["ast", "ruff", "ruff-format"]
+
+
+@pytest.mark.parametrize("location", ["equal", "beneath"])
+def test_temporary_config_and_cache_never_write_under_workspace(tmp_path, monkeypatch, location):
+    service, _, _ = api()
+    captured = snapshot(tmp_path)
+    configured = tmp_path if location == "equal" else tmp_path / "configured-temp"
+    configured.mkdir(exist_ok=True)
+    for name in ("TMPDIR", "TEMP", "TMP"):
+        monkeypatch.setenv(name, str(configured))
+    # Exercise environment selection from an uncached default, including any
+    # transient writable-directory probing which ordinary after-checks miss.
+    monkeypatch.setattr(tempfile, "tempdir", None)
+    writes = []
+    actual_open = os.open
+    actual_mkdir = os.mkdir
+
+    def observe_open(path, flags, *args, **kwargs):
+        if flags & os.O_CREAT:
+            writes.append(Path(path).resolve())
+        return actual_open(path, flags, *args, **kwargs)
+
+    def observe_mkdir(path, *args, **kwargs):
+        writes.append(Path(path).resolve())
+        return actual_mkdir(path, *args, **kwargs)
+
+    monkeypatch.setattr(os, "open", observe_open)
+    monkeypatch.setattr(os, "mkdir", observe_mkdir)
+    before = set(tmp_path.rglob("*"))
+    observed = []
+
+    class InspectingRunner(FakeRunner):
+        def run(self, argv, cwd, **kwargs):
+            if argv[3] == "mypy":
+                config = Path(argv[argv.index("--config-file") + 1]).resolve()
+                cache = Path(argv[argv.index("--cache-dir") + 1]).resolve()
+                observed.append((config, cache))
+                assert config.is_file()
+                assert not config.is_relative_to(tmp_path)
+                assert not cache.is_relative_to(tmp_path)
+                assert set(tmp_path.rglob("*")) == before
+            return super().run(argv, cwd, **kwargs)
+
+    runner = InspectingRunner([result(0, "[]"), result(), result()])
+    service(runner=runner).inspect(captured, typing=True)
+    assert observed
+    assert writes and all(not path.is_relative_to(tmp_path) for path in writes)
+    assert set(tmp_path.rglob("*")) == before
+    assert not observed[0][0].parent.exists()
+
+
+def test_no_external_temporary_parent_is_domain_error_before_allocation(tmp_path, monkeypatch):
+    import python_lab.analysis.service as module
+
+    service, error, _ = api()
+    captured = snapshot(tmp_path)
+    configured = tmp_path / "configured-temp"
+    configured.mkdir()
+    monkeypatch.setattr(tempfile, "tempdir", str(configured))
+    monkeypatch.setattr(module, "_temporary_parents", lambda: [tmp_path, configured], raising=False)
+    before = set(tmp_path.rglob("*"))
+    allocated = []
+    actual_directory = tempfile.TemporaryDirectory
+
+    def observe_directory(*args, **kwargs):
+        allocated.append(kwargs.get("dir"))
+        return actual_directory(*args, **kwargs)
+
+    monkeypatch.setattr(tempfile, "TemporaryDirectory", observe_directory)
+    runner = FakeRunner([result(0, "[]"), result(), result()])
+    with pytest.raises(error, match="temporário.*fora"):
+        service(runner=runner).inspect(captured, typing=True)
+    assert not allocated
+    assert len(runner.calls) == 2
+    assert set(tmp_path.rglob("*")) == before
+
+
+def test_workspace_equal_to_os_temp_root_allocates_outside_it(tmp_path, monkeypatch):
+    service, _, _ = api()
+    root = Path(tempfile.gettempdir()).resolve()
+    if not tmp_path.is_relative_to(root):
+        pytest.skip("Pytest fixture root is outside the OS temporary parent")
+    selected = tmp_path / "main.py"
+    selected.write_text("x = 1\n")
+    captured = Workspace(root).snapshot([selected])
+    monkeypatch.setattr(tempfile, "tempdir", None)
+    for name in ("TMPDIR", "TEMP", "TMP"):
+        monkeypatch.setenv(name, str(root))
+    observed = []
+
+    class InspectingRunner(FakeRunner):
+        def run(self, argv, cwd, **kwargs):
+            if argv[3] == "mypy":
+                for option in ("--config-file", "--cache-dir"):
+                    path = Path(argv[argv.index(option) + 1]).resolve()
+                    assert not path.is_relative_to(root)
+                    observed.append(path)
+            return super().run(argv, cwd, **kwargs)
+
+    runner = InspectingRunner([result(0, "[]"), result(), result()])
+    service(runner=runner).inspect(captured, typing=True)
+    assert len(observed) == 2
+    assert not observed[0].parent.exists()
+
+
+def test_mypy_cancellation_cleans_external_temporary_artifacts(tmp_path, monkeypatch):
+    service, _, cancelled = api()
+    captured = snapshot(tmp_path)
+    monkeypatch.setenv("TMPDIR", str(tmp_path))
+    monkeypatch.setattr(tempfile, "tempdir", str(tmp_path))
+    cancel = threading.Event()
+    observed = []
+
+    class InspectingRunner(FakeRunner):
+        def run(self, argv, cwd, **kwargs):
+            assert kwargs["cancel"] is cancel
+            if argv[3] == "mypy":
+                path = Path(argv[argv.index("--config-file") + 1]).resolve()
+                assert path.is_file() and not path.is_relative_to(tmp_path)
+                observed.append(path)
+            return super().run(argv, cwd, **kwargs)
+
+    runner = InspectingRunner([result(0, "[]"), result(), result(cancelled=True)])
+    with pytest.raises(cancelled):
+        service(runner=runner).inspect(captured, typing=True, cancel=cancel)
+    assert len(observed) == 1 and not observed[0].parent.exists()
 
 
 def test_project_code_is_not_imported(tmp_path):
@@ -264,6 +392,9 @@ def test_real_optional_tools_are_isolated_and_read_only(tmp_path, monkeypatch, s
     (tmp_path / "mypy.ini").write_text("[mypy]\nplugins = evil_plugin\n")
     (tmp_path / "pyproject.toml").write_text('[tool.ruff]\nthis_setting_does_not_exist = true\n')
     monkeypatch.setenv("PYTHONPATH", str(tmp_path))
+    for name in ("TMPDIR", "TEMP", "TMP"):
+        monkeypatch.setenv(name, str(tmp_path))
+    monkeypatch.setattr(tempfile, "tempdir", None)
     main = tmp_path / "main.py"
     main.write_text("import dependency\n\nvalue: int = 1\nprint(dependency, value)\n")
     original = {path.relative_to(tmp_path): path.read_bytes() for path in tmp_path.rglob("*") if path.is_file()}
