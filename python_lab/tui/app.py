@@ -44,6 +44,7 @@ class PythonLabTUI(App[None]):
         assistant_project: Path | None = None,
         assistant_service: AssistantService | None = None,
         assistant_mode: str = "assistant",
+        mode_explicit: bool = False,
     ) -> None:
         super().__init__()
         from python_lab.cli import PythonLabCLI
@@ -60,7 +61,8 @@ class PythonLabTUI(App[None]):
             legacy_windows=False,
         )
         self.cli = PythonLabCLI(app=lab, console=self.output_console, session_log=session_log,
-                                assistant_project=assistant_project, assistant_mode=assistant_mode)
+                                assistant_project=assistant_project, assistant_mode=assistant_mode,
+                                mode_explicit=mode_explicit)
         self.assistant_project = Workspace(assistant_project).root if assistant_project else None
         self.assistant_mode = assistant_mode
         self.assistant_service = assistant_service
@@ -72,6 +74,8 @@ class PythonLabTUI(App[None]):
         self._testing = False
         self._test_worker = None
         self._test_started = Event()
+        self._test_cleanup_done = Event()
+        self._test_exiting = False
         self._status_timer = None
         self.title = f"Python Lab {APP_VERSION}"
         self.sub_title = self._subtitle()
@@ -118,6 +122,10 @@ class PythonLabTUI(App[None]):
             composer.focus()
 
     async def on_unmount(self) -> None:
+        if self._testing and self._test_worker is not None:
+            self._test_worker.cancel()
+            if self._test_started.is_set():
+                await asyncio.to_thread(self._test_cleanup_done.wait)
         if self._assistant_task is not None:
             self._assistant_exiting = False
             self._assistant_cancel.set()
@@ -160,6 +168,11 @@ class PythonLabTUI(App[None]):
             return None
 
     def action_quit_lab(self) -> None:
+        if self._testing and self._test_worker is not None:
+            self._test_exiting = True
+            self._test_worker.cancel()
+            self._append_response("Cancelando testes; aguardando limpeza antes de sair...")
+            return
         if self._assistant_task is not None:
             self._assistant_exiting = True
             self._cancel_assistant()
@@ -329,7 +342,7 @@ class PythonLabTUI(App[None]):
         except ContextError as exc:
             self._append_response(str(exc))
             return
-        handlers = AssistantCommands(self.assistant_service, workspace, self.assistant_mode,
+        handlers = AssistantCommands(self.assistant_service, workspace, self.cli.effective_assistant_mode(),
             app=self.lab, service_factory=self.cli.assistant_runtime.get_service)
         action = {"/explain-code": handlers.explain, "/diagnose": handlers.diagnose,
                   "/check": handlers.check}[command]
@@ -476,6 +489,7 @@ class PythonLabTUI(App[None]):
         if next_step is not None:
             next_step.update("Próximo: executando testes...")
         started = self._test_started = Event()
+        self._test_cleanup_done = Event()
         self._test_worker = self.run_worker(
             lambda: self._run_tests_worker(started),
             thread=True,
@@ -488,6 +502,7 @@ class PythonLabTUI(App[None]):
         started.set()
         worker = get_current_worker()
         if worker.is_cancelled:
+            self._test_cleanup_done.set()
             self.call_from_thread(self._on_tests_finished, None, None, worker.cancelled_event)
             return
         result = error = None
@@ -495,6 +510,10 @@ class PythonLabTUI(App[None]):
             result = self.lab.run_current_tests(cancel=worker.cancelled_event)
         except Exception as exc:
             error = exc
+        finally:
+            # Future cancellation is not process cleanup. This event follows
+            # the real runner/service return and precedes the UI callback.
+            self._test_cleanup_done.set()
         # Worker.cancel() sets the same Event even though cancelling Textual's
         # executor future cannot stop this thread. The runner returns only after
         # process-tree cleanup; only then may the UI release its action slot.
@@ -521,12 +540,14 @@ class PythonLabTUI(App[None]):
         ):
             self._append_response("Execução cancelada.")
             self._refresh_status()
+            self._finish_test_exit()
             return
         if error is not None:
             self._append_response(str(error))
             self.notify(str(error), severity="error")
             self._record("/test", str(error))
             self._refresh_status()
+            self._finish_test_exit()
             return
         assert result is not None
         self.last_test_result = result
@@ -537,6 +558,14 @@ class PythonLabTUI(App[None]):
         self._record("/test", summary)
         self.notify(summary, severity="information" if result.passed else "error")
         self._refresh_status()
+        self._finish_test_exit()
+
+    def _finish_test_exit(self) -> None:
+        if self._test_exiting:
+            self._test_exiting = False
+            self.cli.exit()
+            self._flush_console()
+            self.exit()
 
     def _run_hint(self, confirm_reference: bool = False) -> None:
         try:

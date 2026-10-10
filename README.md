@@ -122,7 +122,7 @@ A TUI lê os campos de texto em Unicode, então acentos no plano e na explicaç�
 
 ## Assistente local (opcional)
 
-`lab` sem `--project` continua abrindo as missões. `lab --project "C:\meus projetos\app"` abre a TUI no projeto indicado; o catálogo das 11 missões permanece separado. Use `/project <diretório>` para trocar de projeto e `/project off` para voltar à vista de missões. `/mode assistant` dá ajuda direta e `/mode tutor` orienta o aprendizado. A missão ativa é preservada na troca de vista. `/explain` continua registrando a explicação **do aluno** e pode concluir a missão; `/explain-code` apenas explica arquivos selecionados e nunca conclui uma missão.
+`lab` sem `--project` continua abrindo as missões. `lab --project "C:\meus projetos\app"` abre a TUI no projeto indicado; o catálogo das 11 missões permanece separado. Use `/project <diretório>` para trocar de projeto e `/project off` para voltar à vista de missões. `tutor` é o modo padrão durante uma missão ativa; `assistant` é o padrão fora de missões. `/mode assistant|tutor` ou `--mode` escolhe um modo explícito que permanece na sessão. A missão ativa é preservada na troca de vista. `/explain` continua registrando a explicação **do aluno** e pode concluir a missão; `/explain-code` apenas explica arquivos selecionados e nunca conclui uma missão.
 
 Ações de terminal de uma só execução:
 
@@ -149,7 +149,7 @@ python -m pip install -c constraints/dev.txt -c constraints/assistant.txt -e '.[
 export LAB_API_KEY='sua chave'  # configure no ambiente seguro; nunca no TOML
 ```
 
-No PowerShell, configure `LAB_API_KEY` como variável de ambiente do processo antes de iniciar `lab`. Nenhum modelo é escolhido automaticamente e a chave nunca entra no TOML. As respostas dependem de rede e consomem tokens; o limite configurado cobre tokens de **saída** por sessão, não custo total. Não há repetição automática após erro. Cada seleção é explícita e limitada a 20 arquivos, 32768 bytes por arquivo e 131072 bytes no total. Código, traceback e respostas são exibidos como texto literal; a assistência não altera arquivos do projeto nem registra conclusões de missão. Na TUI, `/cancel`, o botão Cancelar ou Ctrl+C interrompem a ação e aguardam a limpeza antes de liberar o campo.
+No PowerShell, configure `LAB_API_KEY` como variável de ambiente do processo antes de iniciar `lab`. Nenhum modelo é escolhido automaticamente e a chave nunca entra no TOML. As respostas dependem de rede e consomem tokens; o limite configurado cobre tokens de **saída** por sessão, não custo total. Não há repetição automática após erro. Cada seleção é explícita e limitada a 20 arquivos, 32768 bytes por arquivo e 131072 bytes no total. Código, traceback e respostas são exibidos como texto literal; a assistência não altera arquivos do projeto nem registra conclusões de missão. Na TUI, `/cancel`, o botão Cancelar ou Ctrl+C interrompem a ação e aguardam a limpeza antes de liberar o campo. Ctrl+C durante `/test` aguarda a limpeza do processo de testes antes de sair. No prompt clássico, `/cancel` pode ser digitado enquanto a análise ou a resposta está em curso; o próximo comando só é aceito após a limpeza.
 
 ## Ajuda e evidências
 

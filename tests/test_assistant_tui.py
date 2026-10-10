@@ -113,3 +113,30 @@ def test_tui_check_and_diagnose_share_handlers(app, tmp_path):
             assert provider.requests[0].traceback.startswith('ZeroDivisionError')
             assert 'Division by zero' in '\n'.join(tui.transcript_entries)
     asyncio.run(run())
+
+
+def test_tui_default_mode_tracks_mission_and_explicit_override(app, tmp_path):
+    from python_lab.assistant.models import AssistantAnswer, CodeReference, Usage
+    from tests.helpers.assistant import RecordingProvider
+    (tmp_path / 'code.py').write_text('print(1)\n', encoding='utf-8')
+    provider = RecordingProvider(AssistantAnswer('Summary', 'Explanation', (),
+        (CodeReference('code.py', 1, 1),), 0, Usage(3, 2)))
+    service = AssistantService(provider, AnalysisService(), ConversationRepository(tmp_path / 'history.sqlite3'))
+    tui = PythonLabTUI(app, assistant_project=tmp_path, assistant_service=service)
+    async def run():
+        async with tui.run_test() as pilot:
+            await pilot.pause()
+            async def ask():
+                tui._submit('/explain-code code.py')
+                deadline = time.monotonic() + 5
+                while tui._assistant_task is not None and time.monotonic() < deadline:
+                    await asyncio.sleep(.01)
+                assert tui._assistant_task is None
+            await ask()
+            tui._submit('/start 001')
+            await ask()
+            tui._submit('/mode assistant')
+            await ask()
+    asyncio.run(run())
+    assert [request.mode for request in provider.requests] == ['assistant', 'tutor', 'assistant']
+    assert provider.requests[1].mission_id == '001'

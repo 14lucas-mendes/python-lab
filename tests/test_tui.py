@@ -467,3 +467,44 @@ def test_late_worker_cancel_preserves_accepted_completion(app, monkeypatch, phas
             assert app.last_test_result() is accepted and tui.last_test_result is accepted
 
     _drive(app, scenario)
+
+
+@pytest.mark.parametrize("quit_via", ["action", "key"])
+def test_ctrl_c_during_tests_waits_for_descendant_cleanup_before_exit(app, tmp_path, quit_via):
+    import time
+    from dataclasses import replace
+    from tests.test_process_runner import tree_command, assert_tree_stopped
+
+    command = tree_command(tmp_path)
+    suite = tmp_path / 'test_hanging_tree.py'
+    suite.write_text('import subprocess\ndef test_tree():\n' + f'    subprocess.run({command!r}, check=True)\n')
+    app.missions[0] = replace(app.missions[0], test_path=suite)
+    app.start('001')
+    app.save_plan(dict(input='x', output='y', steps='z', risks='w'))
+
+    async def scenario(tui, pilot):
+        await _submit(tui, pilot, '/test')
+        deadline = time.monotonic() + 5
+        while not (tmp_path / 'ready').exists() and time.monotonic() < deadline:
+            await asyncio.sleep(.01)
+        assert (tmp_path / 'ready').exists()
+        if quit_via == "key":
+            await pilot.press("ctrl+c")
+        else:
+            tui.action_quit_lab()
+        premature_exit = tui._exit and not tui._test_cleanup_done.is_set()
+        if premature_exit and tui._test_worker is not None:
+            # RED cleanup so the old implementation does not leak a process.
+            tui._test_worker.cancel()
+            deadline = time.monotonic() + 5
+            while tui._testing and time.monotonic() < deadline:
+                await asyncio.sleep(.01)
+        assert not premature_exit, 'TUI exited before test process cleanup'
+        deadline = time.monotonic() + 5
+        while not tui._exit and time.monotonic() < deadline:
+            await asyncio.sleep(.01)
+        assert tui._exit
+        assert_tree_stopped(tmp_path)
+        assert app.current_progress().attempts == 0
+        assert not app.current_progress().attempt_history
+    _drive(app, scenario)

@@ -7,6 +7,7 @@ from dataclasses import asdict
 from importlib import metadata
 import sqlite3
 import sys
+import threading
 from pathlib import Path
 from typing import Sequence
 
@@ -91,6 +92,7 @@ class PythonLabCLI:
         assistant_project: Path | None = None,
         assistant_runtime: AssistantRuntime | None = None,
         assistant_mode: str = "assistant",
+        mode_explicit: bool = False,
     ) -> None:
         self.app = app
         self.console = encoding_safe_console(console or Console())
@@ -98,8 +100,12 @@ class PythonLabCLI:
         self._last_summary = ""
         self.assistant_project = assistant_project.resolve() if assistant_project else None
         self.assistant_mode = assistant_mode
+        self._assistant_mode_explicit = mode_explicit or assistant_mode != "assistant"
         self.assistant_runtime = assistant_runtime or AssistantRuntime(app.repository.path.parent, app)
         self._runner = None
+        self._classic_loop = None
+        self._classic_thread = None
+        self._classic_action = None
         self.handlers = {
             "/goal": self.show_goal,
             "/skills": self.show_skills,
@@ -143,7 +149,7 @@ class PythonLabCLI:
         if command in {"/explain-code", "/diagnose", "/check"}:
             return self._execute_assistant(parsed)
         if command == "/cancel":
-            self.console.print("Nenhuma ação em curso.")
+            self.cancel_classic_action()
             return True
         self._last_summary = DEFAULT_SUMMARIES.get(command, f"{command} executado")
         display = " ".join((command, *parsed.args)).strip()
@@ -171,6 +177,7 @@ class PythonLabCLI:
                 self.console.print("Uso: /mode assistant|tutor", markup=False)
             else:
                 self.assistant_mode = args[0]
+                self._assistant_mode_explicit = True
                 self.console.print(f"Modo: {self.assistant_mode}", markup=False)
             return True
         if len(args) != 1:
@@ -188,10 +195,15 @@ class PythonLabCLI:
         self.console.print(f"Projeto: {self.assistant_project}", markup=False)
         return True
 
+    def effective_assistant_mode(self) -> str:
+        if self._assistant_mode_explicit:
+            return self.assistant_mode
+        return "tutor" if self.app.progress.current_mission_id else "assistant"
+
     def _execute_assistant(self, parsed) -> bool:
         try:
             workspace = Workspace(self.assistant_project or Path.cwd())
-            handlers = AssistantCommands(None, workspace, self.assistant_mode,
+            handlers = AssistantCommands(None, workspace, self.effective_assistant_mode(),
                 app=self.app, service_factory=self.assistant_runtime.get_service)
             if self._runner is None:
                 self._runner = asyncio.Runner()
@@ -206,7 +218,84 @@ class PythonLabCLI:
             self.console.print("Ação cancelada.", markup=False)
         return True
 
+    def _ensure_classic_loop(self) -> None:
+        if self._classic_loop is not None:
+            return
+        ready = threading.Event()
+        def run_loop() -> None:
+            loop = asyncio.new_event_loop()
+            asyncio.set_event_loop(loop)
+            self._classic_loop = loop
+            ready.set()
+            try:
+                loop.run_forever()
+                loop.run_until_complete(self.assistant_runtime.aclose())
+                loop.run_until_complete(loop.shutdown_asyncgens())
+                loop.run_until_complete(loop.shutdown_default_executor())
+            finally:
+                loop.close()
+                asyncio.set_event_loop(None)
+        self._classic_thread = threading.Thread(target=run_loop, name="lab-assistant-loop")
+        self._classic_thread.start()
+        ready.wait()
+
+    def start_classic_assistant(self, parsed) -> None:
+        if self._classic_action is not None:
+            self.console.print("Ação em curso; use /cancel.", markup=False)
+            return
+        self._ensure_classic_loop()
+        workspace = Workspace(self.assistant_project or Path.cwd())
+        handlers = AssistantCommands(None, workspace, self.effective_assistant_mode(),
+            app=self.app, service_factory=self.assistant_runtime.get_service)
+        action = {"/check": handlers.check, "/explain-code": handlers.explain,
+                  "/diagnose": handlers.diagnose}[parsed.name]
+        cancel = threading.Event()
+        done = threading.Event()
+        scheduled = threading.Event()
+        state = {"cancel": cancel, "done": done, "task": None}
+        self._classic_action = state
+
+        def schedule() -> None:
+            task = self._classic_loop.create_task(action(parsed.args, cancel=cancel))
+            state["task"] = task
+            def finished(completed) -> None:
+                try:
+                    result = completed.result()
+                except asyncio.CancelledError:
+                    self.console.print("Ação cancelada.", markup=False)
+                except Exception as exc:
+                    self.console.print(str(exc), markup=False)
+                else:
+                    self.console.print(result.message, markup=False)
+                    self._record(parsed.name, result.message if result.ok else "Falha na assistência")
+                finally:
+                    self._classic_action = None
+                    done.set()
+            task.add_done_callback(finished)
+            scheduled.set()
+        self._classic_loop.call_soon_threadsafe(schedule)
+        scheduled.wait()
+        self.console.print("Analisando projeto... Use /cancel para interromper.", markup=False)
+
+    def cancel_classic_action(self, *, silent: bool = False) -> None:
+        state = self._classic_action
+        if state is None:
+            if not silent:
+                self.console.print("Nenhuma ação em curso.", markup=False)
+            return
+        state["cancel"].set()
+        self._classic_loop.call_soon_threadsafe(state["task"].cancel)
+        self.console.print("Cancelando; aguardando limpeza...", markup=False)
+        state["done"].wait()
+
     def close_assistant(self) -> None:
+        if self._classic_action is not None:
+            self.cancel_classic_action(silent=True)
+        if self._classic_loop is not None:
+            self._classic_loop.call_soon_threadsafe(self._classic_loop.stop)
+            self._classic_thread.join()
+            self._classic_loop = None
+            self._classic_thread = None
         if self._runner is not None:
             self._runner.run(self.assistant_runtime.aclose())
             self._runner.close()
@@ -624,9 +713,11 @@ def _argument_parser() -> argparse.ArgumentParser:
 
 
 def _run_classic(app: PythonLabApp, session_log: SessionLog | None, console: Console,
-                 assistant_project: Path | None = None, assistant_mode: str = "assistant") -> int:
+                 assistant_project: Path | None = None, assistant_mode: str = "assistant",
+                 mode_explicit: bool = False) -> int:
     cli = PythonLabCLI(app=app, console=console, session_log=session_log,
-                       assistant_project=assistant_project, assistant_mode=assistant_mode)
+                       assistant_project=assistant_project, assistant_mode=assistant_mode,
+                       mode_explicit=mode_explicit)
     if assistant_project is None:
         _banner(app, console)
     else:
@@ -635,23 +726,47 @@ def _run_classic(app: PythonLabApp, session_log: SessionLog | None, console: Con
     try:
         while True:
             line = console.input("[bold]lab>[/bold] ")
+            try:
+                parsed = parse_command(line)
+            except ValueError:
+                cli.execute(line)
+                continue
+            if cli._classic_action is not None:
+                if parsed.name == "/cancel":
+                    cli.cancel_classic_action()
+                elif parsed.name == "/exit":
+                    cli.cancel_classic_action()
+                    cli.execute(line)
+                    break
+                else:
+                    console.print("Ação em curso; use /cancel.", markup=False)
+                continue
+            if parsed.name in {"/check", "/explain-code", "/diagnose"}:
+                try:
+                    cli.start_classic_assistant(parsed)
+                except (ContextError, AssistantError) as exc:
+                    console.print(str(exc), markup=False)
+                continue
             if not cli.execute(line):
                 break
     except KeyboardInterrupt:
+        cli.cancel_classic_action(silent=True)
         cli._close_session("Sessão interrompida")
         console.print("\nSessão encerrada. O último estado confirmado foi preservado.")
     except EOFError:
+        cli.cancel_classic_action(silent=True)
         cli.exit()
-    cli.close_assistant()
+    finally:
+        cli.close_assistant()
     return 0
 
 
-def _run_tui(app: PythonLabApp, session_log: SessionLog | None, assistant_project: Path | None = None, assistant_mode: str = "assistant") -> int:
+def _run_tui(app: PythonLabApp, session_log: SessionLog | None, assistant_project: Path | None = None, assistant_mode: str = "assistant", mode_explicit: bool = False) -> int:
     try:
-        if assistant_project is None and assistant_mode == "assistant":
+        if assistant_project is None and assistant_mode == "assistant" and not mode_explicit:
             PythonLabTUI(lab=app, session_log=session_log).run()
         else:
-            PythonLabTUI(lab=app, session_log=session_log, assistant_project=assistant_project, assistant_mode=assistant_mode).run()
+            PythonLabTUI(lab=app, session_log=session_log, assistant_project=assistant_project, assistant_mode=assistant_mode, mode_explicit=mode_explicit).run()
     finally:
         if session_log is not None and session_log.is_open:
             try:
@@ -714,9 +829,10 @@ def main(argv: Sequence[str] | None = None) -> int:
     except (ProgressError, ApplicationError, CatalogError, SessionError) as exc:
         console.print(str(exc), style="red", markup=False)
         return 1
+    mode_explicit = any(value == "--mode" or value.startswith("--mode=") for value in raw)
     if args.classic:
-        return _run_classic(app, session_log, console, args.project, args.mode)
-    return _run_tui(app, session_log, args.project, args.mode)
+        return _run_classic(app, session_log, console, args.project, args.mode, mode_explicit)
+    return _run_tui(app, session_log, args.project, args.mode, mode_explicit)
 
 
 def _run_external_assistant(args) -> int:
