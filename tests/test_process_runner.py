@@ -73,10 +73,10 @@ def tree_command(tmp_path, parent_exits=False, closed_output=False):
     return [sys.executable, "-c", parent]
 
 
-def assert_tree_stopped(tmp_path):
+def assert_tree_stopped(tmp_path, diagnostics=None):
     pid = int((tmp_path / "ready").read_text())
     (tmp_path / "release").touch()
-    assert not process_is_alive(pid), f"Descendant {pid} survived cleanup"
+    assert not process_is_alive(pid), f"Descendant {pid} survived cleanup; diagnostics={diagnostics}"
     assert not (tmp_path / "leaked").exists()
 
 
@@ -160,8 +160,87 @@ def test_missing_command_raises_oserror(tmp_path):
         runner().run([str(tmp_path / "missing-program")], tmp_path)
 
 
+def observe_windows_job_cleanup(monkeypatch):
+    """On failure, distinguish membership accounting from process signaling."""
+    import ctypes
+    from ctypes import wintypes
+    from python_lab.runtime.windows import WindowsJob, _Accounting
+
+    class PidList(ctypes.Structure):
+        _fields_ = [("assigned", wintypes.DWORD), ("listed", wintypes.DWORD),
+                    ("pids", ctypes.c_size_t * 256)]
+
+    records = []
+    original_close = WindowsJob.close
+
+    def close(job):
+        kernel = job._kernel
+        kernel.OpenProcess.argtypes = [wintypes.DWORD, wintypes.BOOL, wintypes.DWORD]
+        kernel.OpenProcess.restype = wintypes.HANDLE
+        kernel.WaitForSingleObject.argtypes = [wintypes.HANDLE, wintypes.DWORD]
+        kernel.WaitForSingleObject.restype = wintypes.DWORD
+        query = kernel.QueryInformationJobObject
+        terminate = kernel.TerminateJobObject
+        handles = {}
+
+        def snapshot(stage):
+            members = PidList()
+            record = {"stage": stage}
+            if query(job._handle, 3, ctypes.byref(members), ctypes.sizeof(members), None):
+                pids = list(members.pids[:members.listed])
+                record.update(assigned=members.assigned, listed=members.listed, pids=pids)
+                for pid in pids:
+                    if pid not in handles:
+                        handle = kernel.OpenProcess(0x00100000, False, pid)
+                        if handle:
+                            handles[pid] = handle
+                        else:
+                            record.setdefault("open_errors", {})[pid] = ctypes.get_last_error()
+            else:
+                record["query_error"] = ctypes.get_last_error()
+            record["process_waits"] = {
+                pid: kernel.WaitForSingleObject(handle, 0) for pid, handle in handles.items()
+            }
+            records.append(record)
+
+        def terminate_job(*args):
+            snapshot("before_terminate")
+            result = terminate(*args)
+            error = ctypes.get_last_error()
+            snapshot("after_terminate")
+            ctypes.set_last_error(error)
+            return result
+
+        def query_job(handle, kind, info, size, returned):
+            result = query(handle, kind, info, size, returned)
+            error = ctypes.get_last_error()
+            if result and kind == 1:
+                active = ctypes.cast(info, ctypes.POINTER(_Accounting)).contents.ActiveProcesses
+                if active == 0:
+                    snapshot("accounting_zero")
+            ctypes.set_last_error(error)
+            return result
+
+        kernel.TerminateJobObject = terminate_job
+        kernel.QueryInformationJobObject = query_job
+        try:
+            original_close(job)
+        finally:
+            kernel.TerminateJobObject = terminate
+            kernel.QueryInformationJobObject = query
+            records.append({"stage": "after_close", "process_waits": {
+                pid: kernel.WaitForSingleObject(handle, 0) for pid, handle in handles.items()
+            }})
+            for handle in handles.values():
+                kernel.CloseHandle(handle)
+
+    monkeypatch.setattr(WindowsJob, "close", close)
+    return records
+
+
 @pytest.mark.parametrize("outcome", ["normal", "timeout", "cancel"])
-def test_closed_output_descendant_is_stopped_before_return(tmp_path, outcome):
+def test_closed_output_descendant_is_stopped_before_return(tmp_path, outcome, monkeypatch):
+    diagnostics = observe_windows_job_cleanup(monkeypatch) if os.name == "nt" else None
     cancel = threading.Event()
     with ThreadPoolExecutor() as pool:
         future = pool.submit(
@@ -174,7 +253,7 @@ def test_closed_output_descendant_is_stopped_before_return(tmp_path, outcome):
         result = future.result(timeout=5)
     assert result.timed_out == (outcome == "timeout")
     assert result.cancelled == (outcome == "cancel")
-    assert_tree_stopped(tmp_path)
+    assert_tree_stopped(tmp_path, diagnostics)
 
 
 @pytest.mark.skipif(os.name == "nt", reason="POSIX signal delivery synchronization seam")
