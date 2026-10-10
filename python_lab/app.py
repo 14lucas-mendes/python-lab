@@ -1,11 +1,12 @@
 import copy
+from dataclasses import dataclass
 import threading
 from datetime import datetime, timezone
 from pathlib import Path
 
 from python_lab.learning import (
     CompletionError,
-    PLAN_KEYS,
+    plan_is_complete,
     complete_mission,
     recommend_mission,
     reveal_hint,
@@ -40,6 +41,15 @@ def _solution_fingerprint(path: Path) -> str | None:
         return solution_fingerprint(path)
     except OSError as exc:
         raise ApplicationError(f"Não foi possível ler a solução: {path}: {exc}") from exc
+
+
+@dataclass(frozen=True)
+class StatusSnapshot:
+    current_mission_id: str | None
+    plan_complete: bool
+    tests_current: bool
+    next_step: str
+    last_result: TestResult | None
 
 
 class PythonLabApp:
@@ -139,9 +149,7 @@ class PythonLabApp:
     ) -> TestResult:
         mission = self.current_mission()
         progress = self.current_progress()
-        if not progress.plan or not all(
-            key in progress.plan and str(progress.plan[key]).strip() for key in PLAN_KEYS
-        ):
+        if not plan_is_complete(progress.plan):
             raise ApplicationError("Planejamento incompleto: registre /plan antes de testar")
         chosen = solution_path or mission.solution_path
         chosen_path = Path(chosen).resolve()
@@ -226,22 +234,30 @@ class PythonLabApp:
         self.persist()
         return evidence
 
-    def next_step(self) -> str:
-        if not self.progress.current_mission_id:
+    def status_snapshot(self) -> StatusSnapshot:
+        current = self.progress.current_mission_id
+        plan_complete = False
+        tests_current = False
+        if current is None:
             recommended = self.recommended()
-            if recommended is None:
-                return "Todas as missões concluídas."
-            return f"Inicie a missão {recommended.id} com /start {recommended.id}"
-        progress = self.current_progress()
-        if not progress.plan or not all(
-            key in progress.plan and str(progress.plan[key]).strip() for key in PLAN_KEYS
-        ):
-            return "Registre o planejamento com /plan"
-        if not progress.tests_passed:
-            return "Edite a solução e execute /test"
-        if not self.tests_are_current():
-            return "Execute /test novamente para a solução atual"
-        return "Registre a explicação com /explain"
+            next_step = ("Todas as missões concluídas." if recommended is None else
+                         f"Inicie a missão {recommended.id} com /start {recommended.id}")
+        else:
+            progress = self.current_progress()
+            plan_complete = plan_is_complete(progress.plan)
+            tests_current = self.tests_are_current()
+            if not plan_complete:
+                next_step = "Registre o planejamento com /plan"
+            elif not progress.tests_passed:
+                next_step = "Edite a solução e execute /test"
+            elif not tests_current:
+                next_step = "Execute /test novamente para a solução atual"
+            else:
+                next_step = "Registre a explicação com /explain"
+        return StatusSnapshot(current, plan_complete, tests_current, next_step, self.last_test_result())
+
+    def next_step(self) -> str:
+        return self.status_snapshot().next_step
 
     def skill_states(self) -> dict[str, str]:
         rank = {"practicing": 1, "demonstrated": 2, "consolidated": 3}

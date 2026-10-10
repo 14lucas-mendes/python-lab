@@ -78,7 +78,7 @@ def reveal_hint(mission: Mission, progress: MissionProgress, confirm_reference: 
     return mission.hints[next_index]
 
 
-def _plan_is_complete(plan: dict[str, str] | None) -> bool:
+def plan_is_complete(plan: dict[str, str] | None) -> bool:
     if not plan:
         return False
     return all(key in plan and str(plan[key]).strip() for key in PLAN_KEYS)
@@ -101,7 +101,7 @@ def complete_mission(
     progress: MissionProgress,
     existing_evidence: list[dict[str, object]],
 ) -> list[dict[str, object]]:
-    if not _plan_is_complete(progress.plan):
+    if not plan_is_complete(progress.plan):
         raise CompletionError("Conclusão rejeitada: planejamento incompleto")
     if not progress.tests_passed:
         raise CompletionError("Conclusão rejeitada: testes pendentes")

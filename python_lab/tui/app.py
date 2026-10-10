@@ -1,4 +1,6 @@
+from importlib import metadata
 from io import StringIO
+import shlex
 from pathlib import Path
 from threading import Event
 
@@ -12,7 +14,8 @@ from textual.widgets import Input, Label, Markdown, Static
 from textual.worker import get_current_worker
 
 from python_lab.app import ApplicationError, PythonLabApp
-from python_lab.learning import HintError, LearningError, PLAN_KEYS
+from python_lab.commands import ALIASES, COMMANDS, parse_command
+from python_lab.learning import HintError, LearningError
 from python_lab.models import TestResult
 from python_lab.presentation import test_feedback
 from python_lab.progress import ProgressError
@@ -21,7 +24,7 @@ from python_lab.tui.screens import ConfirmScreen, ExplainScreen, PlanScreen
 from python_lab.tui.widgets import CommandPalette, Composer, NextStepBar
 
 
-APP_VERSION = "0.3.0"
+APP_VERSION = metadata.version("python-lab")
 
 
 class PythonLabTUI(App[None]):
@@ -33,7 +36,7 @@ class PythonLabTUI(App[None]):
         session_log: SessionLog | None = None,
     ) -> None:
         super().__init__()
-        from python_lab.cli import ALIASES, COMMANDS, PythonLabCLI
+        from python_lab.cli import PythonLabCLI
 
         self.lab = lab
         self.session_log = session_log
@@ -179,7 +182,10 @@ class PythonLabTUI(App[None]):
         self._apply_palette_selection()
 
     def _should_complete_from_palette(self, value: str) -> bool:
-        command, argument = self._split_command(value)
+        try:
+            command, argument = self._split_command(value)
+        except ValueError:
+            return False
         if command in self.cli.handlers:
             return command == "/start" and not argument
         return True
@@ -213,7 +219,12 @@ class PythonLabTUI(App[None]):
         if not stripped:
             return
         self._append_user(stripped)
-        command, argument = self._split_command(stripped)
+        try:
+            command, argument = self._split_command(stripped)
+        except ValueError as exc:
+            self._append_response(str(exc))
+            self._record(stripped, str(exc))
+            return
         if command in {"/mission", "/concepts"}:
             mission_id = argument.strip() or self.lab.progress.current_mission_id
             if not mission_id:
@@ -292,7 +303,7 @@ class PythonLabTUI(App[None]):
             if text is None:
                 self._append_response("Explicação cancelada.")
                 return
-            keep = self.cli.execute(f"/explain {text}")
+            keep = self.cli.execute(f"/explain {shlex.quote(text)}")
             self._flush_console()
             self._refresh_status()
             if not keep:
@@ -410,10 +421,8 @@ class PythonLabTUI(App[None]):
         self._run_hint(confirm_reference=True)
 
     def _split_command(self, line: str) -> tuple[str, str]:
-        parts = line.strip().split(maxsplit=1)
-        raw = parts[0].lower() if parts else ""
-        argument = parts[1] if len(parts) > 1 else ""
-        return self.aliases.get(raw, raw), argument
+        command = parse_command(line)
+        return command.name, " ".join(command.args)
 
     def _subtitle(self) -> str:
         current = self.lab.progress.current_mission_id or "nenhuma"
@@ -440,7 +449,8 @@ class PythonLabTUI(App[None]):
         next_step = self._next_step_bar()
         if next_step is None:
             return
-        next_step.update_from(self.lab)
+        snapshot = self.lab.status_snapshot()
+        next_step.update_from(self.lab, snapshot)
         self.sub_title = self._subtitle()
         shell = self._shell()
         current = self.lab.progress.current_mission_id
@@ -456,8 +466,8 @@ class PythonLabTUI(App[None]):
         shell.query_one("#mission-header", Static).update(header)
         if current:
             progress = self.lab.current_progress()
-            plan_done = all(str((progress.plan or {}).get(key, "")).strip() for key in PLAN_KEYS)
-            current_tests = self.lab.tests_are_current()
+            plan_done = snapshot.plan_complete
+            current_tests = snapshot.tests_current
             stages = "   ".join(
                 f"[{'x' if done else ' '}] {label}" for done, label in (
                     (plan_done, "Plano"), (current_tests, "Testes atuais"),
@@ -475,10 +485,10 @@ class PythonLabTUI(App[None]):
                 actions += [f"/mission {mission.id}", f"/start {mission.id}"]
         shell.query_one("#stages", Static).update(stages)
         shell.query_one("#actions", Static).update("Ações: " + "  ".join(actions) + "  · / para todos")
-        result = self.lab.last_test_result()
+        result = snapshot.last_result
         if result:
             label = result.summary or ("Testes passaram" if result.passed else "Testes falharam")
-            if current and self.lab.current_progress().tests_passed and not self.lab.tests_are_current():
+            if current and self.lab.current_progress().tests_passed and not snapshot.tests_current:
                 label = "Desatualizado: execute /test novamente. " + label
             result_mission = current or self.lab.last_test_mission_id
             text = f"Último resultado (missão {result_mission}): " + label

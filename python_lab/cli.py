@@ -1,4 +1,5 @@
 import argparse
+from importlib import metadata
 import sqlite3
 import sys
 from pathlib import Path
@@ -10,6 +11,7 @@ from rich.panel import Panel
 from rich.table import Table
 
 from python_lab.app import ActiveMissionError, ApplicationError, PythonLabApp
+from python_lab.commands import ALIASES, COMMANDS, DEFAULT_SUMMARIES, CommandDispatcher, CommandResult, parse_command
 from python_lab.catalog import CatalogError, load_goal, load_missions, load_roadmap, load_skills
 from python_lab.learning import CompletionError, HintError, LearningError
 from python_lab.progress import ProgressError, ProgressRepository
@@ -21,58 +23,6 @@ from python_lab.storage.migration import migrate_json_state
 from python_lab.storage.paths import resolve_paths
 from python_lab.tui.app import PythonLabTUI
 
-
-COMMANDS = (
-    ("/goal", "/g", "Exibir objetivo e critérios de sucesso"),
-    ("/skills", "/sk", "Exibir mapa de competências e evidências"),
-    ("/missions", "/ms", "Listar missões e estados"),
-    ("/start <id>", "", "Iniciar ou repetir uma missão desbloqueada"),
-    ("/mission [id]", "", "Consultar o enunciado sem iniciar a missão"),
-    ("/concepts [id]", "", "Consultar apoio conceitual opcional"),
-    ("/plan", "/p", "Registrar ou revisar o planejamento"),
-    ("/test", "/t", "Executar os testes da missão atual"),
-    ("/test details", "", "Consultar a saída completa sem nova tentativa"),
-    ("/hint", "/h", "Liberar a próxima pista"),
-    ("/explain", "/e", "Registrar a explicação final"),
-    ("/status", "/st", "Exibir estado da sessão"),
-    ("/history", "/hi", "Exibir histórico de tentativas da missão atual"),
-    ("/session", "/se", "Exibir o histórico desta sessão"),
-    ("/evidence", "/ev", "Exibir evidências de competências"),
-    ("/help", "/?", "Listar comandos disponíveis"),
-    ("/exit", "/q", "Salvar e encerrar com segurança"),
-)
-
-ALIASES = {
-    "/g": "/goal",
-    "/sk": "/skills",
-    "/ms": "/missions",
-    "/p": "/plan",
-    "/t": "/test",
-    "/h": "/hint",
-    "/e": "/explain",
-    "/st": "/status",
-    "/hi": "/history",
-    "/se": "/session",
-    "/ev": "/evidence",
-    "/?": "/help",
-    "/q": "/exit",
-}
-
-DEFAULT_SUMMARIES = {
-    "/goal": "Goal exibido",
-    "/skills": "Skills exibidas",
-    "/missions": "Missões listadas",
-    "/mission": "Enunciado consultado",
-    "/concepts": "Apoio conceitual consultado",
-    "/plan": "Planejamento registrado",
-    "/hint": "Pista liberada",
-    "/status": "Status exibido",
-    "/history": "Histórico de tentativas exibido",
-    "/session": "Histórico da sessão exibido",
-    "/evidence": "Evidências exibidas",
-    "/help": "Ajuda exibida",
-    "/exit": "Sessão encerrada",
-}
 
 SKILL_LABELS = {
     "practicing": "Em prática",
@@ -123,33 +73,30 @@ class PythonLabCLI:
             "/help": self.help,
             "/exit": self.exit,
         }
+        self.dispatcher = CommandDispatcher()
+        for name, handler in self.handlers.items():
+            self.dispatcher.register(name, self._adapt_handler(handler))
+
+    def _adapt_handler(self, handler):
+        def invoke(args: tuple[str, ...]) -> CommandResult:
+            keep_running = handler(" ".join(args))
+            return CommandResult(True, self._last_summary, {}, exit_requested=not keep_running)
+        return invoke
 
     def execute(self, command_line: str) -> bool:
-        stripped = command_line.strip()
-        if not stripped:
+        if not command_line.strip():
             return True
-        parts = stripped.split(maxsplit=1)
-        raw_command = parts[0].lower()
-        argument = parts[1] if len(parts) > 1 else ""
-        if not raw_command.startswith("/"):
-            suggested = f"/{raw_command}"
-            if suggested in self.handlers or suggested in ALIASES:
-                message = f"Comando desconhecido. Use {suggested}. Digite /help para a lista."
-            else:
-                message = "Comando desconhecido. Digite /help para a lista."
-            self.console.print(message)
-            self._record(raw_command, "Comando desconhecido")
-            return True
-        command = ALIASES.get(raw_command, raw_command)
-        handler = self.handlers.get(command)
-        if handler is None:
-            self.console.print("Comando desconhecido. Digite /help para a lista.")
-            self._record(raw_command, "Comando desconhecido")
-            return True
-        self._last_summary = DEFAULT_SUMMARIES.get(command, f"{command} executado")
-        display = f"{command} {argument}".strip()
         try:
-            result = handler(argument)
+            parsed = parse_command(command_line)
+        except ValueError as exc:
+            self.console.print(str(exc), style="red", markup=False)
+            self._record(command_line, str(exc))
+            return True
+        command = parsed.name
+        self._last_summary = DEFAULT_SUMMARIES.get(command, f"{command} executado")
+        display = " ".join((command, *parsed.args)).strip()
+        try:
+            result = self.dispatcher.dispatch(parsed)
         except (EOFError, KeyboardInterrupt):
             return self.exit()
         except (ApplicationError, LearningError, ProgressError, SessionError) as exc:
@@ -157,11 +104,14 @@ class PythonLabCLI:
             self._record(display, str(exc))
             self._print_next_step()
             return True
-        if result:
-            self._record(display, self._last_summary)
+        if not result.ok:
+            self.console.print(result.message, markup=False)
+            self._record(display, "Comando desconhecido")
+        elif not result.exit_requested:
+            self._record(display, result.message)
             if command != "/status":
                 self._print_next_step()
-        return result
+        return not result.exit_requested
 
     def _record(self, command: str, summary: str) -> None:
         if self.session_log is None:
@@ -361,8 +311,9 @@ class PythonLabCLI:
         return True
 
     def status(self, _argument: str = "") -> bool:
+        snapshot = self.app.status_snapshot()
         recommended = self.app.recommended()
-        current_id = self.app.progress.current_mission_id or "nenhuma"
+        current_id = snapshot.current_mission_id or "nenhuma"
         recommendation = f"{recommended.id} — {recommended.title}" if recommended else "Todas as missões concluídas"
         lines = [
             f"Missão atual: {current_id}",
@@ -371,7 +322,7 @@ class PythonLabCLI:
         try:
             progress = self.app.current_progress()
             if progress.tests_passed:
-                tests_status = "ok" if self.app.tests_are_current() else "desatualizados"
+                tests_status = "ok" if snapshot.tests_current else "desatualizados"
             else:
                 tests_status = "pendentes"
             lines.extend(
@@ -379,13 +330,13 @@ class PythonLabCLI:
                     f"Tentativas: {progress.attempts}",
                     f"Testes: {tests_status}",
                     f"Pistas: {progress.hints_revealed}",
-                    f"Plano: {'registrado' if progress.plan else 'pendente'}",
+                    f"Plano: {'registrado' if snapshot.plan_complete else 'pendente'}",
                     f"Explicação: {'registrada' if progress.explanation else 'pendente'}",
                 ]
             )
         except ApplicationError:
             pass
-        lines.append(f"Próximo: {self.app.next_step()}")
+        lines.append(f"Próximo: {snapshot.next_step}")
         self.console.print(Panel("\n".join(lines), title="Sessão"))
         return True
 
@@ -553,7 +504,7 @@ def _argument_parser() -> argparse.ArgumentParser:
         prog="python-lab",
         description="Ambiente de prática deliberada em Python.",
     )
-    parser.add_argument("--version", action="version", version="python-lab 0.3.0")
+    parser.add_argument("--version", action="version", version=f"python-lab {metadata.version('python-lab')}")
     parser.add_argument(
         "--classic",
         action="store_true",

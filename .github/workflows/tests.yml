@@ -1,0 +1,52 @@
+name: tests
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    name: ${{ matrix.os }} / Python ${{ matrix.python }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+        python: ['3.11', '3.12']
+    runs-on: ${{ matrix.os }}
+    env:
+      PYTHON: ${{ matrix.os == 'windows-latest' && '.venv/Scripts/python.exe' || '.venv/bin/python' }}
+      LAB: ${{ matrix.os == 'windows-latest' && '.venv/Scripts/lab.exe' || '.venv/bin/lab' }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python }}
+      - name: Native Linux thread-regression prerequisite
+        if: runner.os == 'Linux'
+        shell: bash
+        run: command -v cc
+      - name: Editable dev install with tested constraints
+        shell: bash
+        run: |
+          python -m venv .venv
+          "$PYTHON" -m pip install -c constraints/dev.txt -e '.[dev]'
+          "$PYTHON" -m pip check
+      - name: Entrypoint and isolated classic smoke
+        shell: bash
+        run: |
+          "$LAB" --help
+          "$LAB" --version
+          printf '/missions\n/exit\n' | "$LAB" --classic --data-dir "$RUNNER_TEMP/python-lab-state"
+      - name: Native PowerShell installer validation
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          & ./scripts/install-lab.ps1 -CheckOnly
+          if ($LASTEXITCODE -ne 0) { throw "Installer check failed: $LASTEXITCODE" }
+      - name: Full suite including native runner, TUI and installer regressions
+        shell: bash
+        run: '"$PYTHON" -m pytest -ra'

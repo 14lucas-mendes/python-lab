@@ -188,3 +188,46 @@ def test_session_start_failure_keeps_classic_available(app, monkeypatch, capsys)
     output = capsys.readouterr().out
     assert "histórico indisponível" in output
     assert "Traceback" not in output
+
+
+def test_classic_without_assistant_extra(tmp_path):
+    """An optional SDK import must break this actual fresh-process journey."""
+    import subprocess
+    import sys
+    code = """
+import importlib.abc, sys
+class BlockSDK(importlib.abc.MetaPathFinder):
+    def find_spec(self, fullname, *args):
+        if fullname.split('.')[0] in {'openai', 'anthropic', 'google', 'litellm'}:
+            raise AssertionError('optional SDK imported: ' + fullname)
+sys.meta_path.insert(0, BlockSDK())
+from python_lab.cli import main
+for flag in ['--help', '--version']:
+    try:
+        main([flag])
+    except SystemExit as exc:
+        assert exc.code == 0
+assert main(['--classic', '--data-dir', sys.argv[1]]) == 0
+"""
+    result = subprocess.run([sys.executable, "-c", code, str(tmp_path / "state")],
+                            input="/missions\n/exit\n", capture_output=True, text=True)
+    assert result.returncode == 0, result.stderr
+    assert "001" in result.stdout and "011" in result.stdout
+    assert (tmp_path / "state" / "lab.sqlite3").exists()
+
+
+def test_help_and_version_bypass_state_initialization(monkeypatch):
+    def forbidden(*args, **kwargs):
+        raise AssertionError("state initialized")
+    monkeypatch.setattr("python_lab.cli.build_app", forbidden)
+    for flag in ("--help", "--version"):
+        with pytest.raises(SystemExit) as exc:
+            main([flag])
+        assert exc.value.code == 0
+
+
+def test_entrypoint_version_comes_from_distribution_metadata(monkeypatch, capsys):
+    monkeypatch.setattr("importlib.metadata.version", lambda name: "7.8.9")
+    with pytest.raises(SystemExit):
+        main(["--version"])
+    assert "7.8.9" in capsys.readouterr().out

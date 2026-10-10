@@ -15,13 +15,13 @@ A interface padrão é uma TUI centrada na missão: cabeçalho e etapas persiste
 Use o interpretador 3.11 com o qual o ambiente foi criado. Se `py -3.11` não estiver disponível, ative o `.venv` já existente.
 
 ```powershell
-.venv\Scripts\python.exe -m pip install -e ".[dev]"
+.venv\Scripts\python.exe -m pip install -c constraints\dev.txt -e ".[dev]"
 ```
 
 Para abrir o Lab de qualquer pasta, sem ativar o venv:
 
 ```powershell
-uv tool install --editable ".[dev]"
+uv tool install --editable --constraint constraints\dev.txt ".[dev]"
 ```
 
 Se o `uv` não estiver no PATH, use o script que adiciona `.venv\Scripts` ao PATH do usuário:
@@ -29,6 +29,8 @@ Se o `uv` não estiver no PATH, use o script que adiciona `.venv\Scripts` ao PAT
 ```powershell
 .\scripts\install-lab.ps1
 ```
+
+O script confere Python >=3.11, metadados e `lab --version`, inclusive o código de saída, antes de alterar o PATH. `-CheckOnly` valida a instalação sem gravar o PATH.
 
 Abra um terminal novo e rode:
 
@@ -120,6 +122,33 @@ As soluções de referência ficam em cada pasta de missão (`reference_solution
 
 ## Progresso
 
-O progresso fica em `data/progress.json`, gravado de forma atômica. O histórico de sessões fica em `data/sessions.json`. Não faça commit do progresso real nem do histórico de sessões: o arquivo versionado de progresso é só o seed vazio, e `data/sessions.json` está no `.gitignore`.
+O progresso e o histórico de sessões ficam juntos em `lab.sqlite3`, no diretório de dados do usuário fora do checkout. Use `lab --data-dir <pasta>` para escolher uma pasta; sem override, o Lab usa o diretório de dados da plataforma. A escolha do catálogo e a dos dados são independentes.
+
+Se houver progresso JSON legado no checkout, migre explicitamente:
+
+```powershell
+lab migrate --from-dir .\data --data-dir C:\MeusDados\python-lab
+```
+
+A importação preserva os JSON e cria backups; repetir a mesma importação não duplica os registros. Não faça commit dos dados reais.
 
 Para ajuda fora da sessão, use `lab --help`. O ambiente suportado é Python 3.11 ou mais recente; pytest é instalado pelo extra `dev` e é necessário para executar as missões.
+
+## Desenvolvimento e validação
+
+Os comandos são interpretados igualmente no prompt clássico e na TUI. Aspas simples ou duplas agrupam argumentos; caminhos Windows mantêm as barras invertidas. `/project` fica reservado para uma etapa futura e ainda não executa ações.
+
+Instalação Linux a partir do checkout:
+
+```bash
+python3 -m venv .venv
+.venv/bin/python -m pip install -c constraints/dev.txt -e '.[dev]'
+.venv/bin/python -m pip check
+.venv/bin/python -m pytest -ra
+.venv/bin/lab --help
+.venv/bin/lab --version
+```
+
+No Windows, use `.venv\Scripts\python.exe` e `.venv\Scripts\lab.exe`. `constraints/dev.txt` foi gerado no ambiente Linux Python 3.12, mantendo os limites declarados em `pyproject.toml`; as quatro células do workflow verificam instalação editável e suíte completa em Ubuntu/Windows com Python 3.11/3.12. Os testes incluem as 11 referências, jornadas reais 001/006, entrada/saída da TUI e cancelamento de árvores de processos. Ubuntu precisa de `cc` para a regressão nativa de threads. No Windows, o job também executa PowerShell e testa validação, falhas e idempotência do instalador, restaurando o PATH do usuário.
+
+A existência do workflow não confirma uma execução: os resultados de cada célula dependem do CI. Não é necessário instalar SDK de assistente para ajuda, versão, missões ou prática clássica.
