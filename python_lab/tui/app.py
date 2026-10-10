@@ -358,7 +358,11 @@ class PythonLabTUI(App[None]):
             composer.disabled = False
             composer.placeholder = "Digite / para comandos"
             composer.focus()
-        if cancel is not None and cancel.is_set():
+        # The service accepted completion before saving. A late Worker.cancel
+        # cannot turn a committed result (or save error) into cancellation.
+        if (result is not None and result.cancelled) or (
+            result is None and error is None and cancel is not None and cancel.is_set()
+        ):
             self._append_response("Execução cancelada.")
             self._refresh_status()
             return

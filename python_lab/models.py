@@ -73,3 +73,4 @@ class TestResult:
     output: str
     summary: str = ""
     diagnostics: tuple[str, ...] = ()
+    cancelled: bool = False

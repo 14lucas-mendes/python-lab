@@ -14,6 +14,7 @@ from python_lab.learning import (
 from python_lab.catalog import CatalogError
 from python_lab.models import AppProgress, Goal, Mission, MissionProgress, RoadmapCycle, Skill, TestResult
 from python_lab.progress import ProgressRepository
+from python_lab.runtime.processes import ProcessCleanupError
 from python_lab.test_runner import run_tests, solution_fingerprint
 
 
@@ -145,11 +146,29 @@ class PythonLabApp:
         chosen = solution_path or mission.solution_path
         chosen_path = Path(chosen).resolve()
         fingerprint = _solution_fingerprint(chosen_path)
-        result = run_tests(mission.test_path, self.project_root, chosen, cancel=cancel)
-        if cancel is not None and cancel.is_set():
+        try:
+            result = run_tests(mission.test_path, self.project_root, chosen, cancel=cancel)
+        except ProcessCleanupError as exc:
+            progress.tests_passed = False
+            try:
+                self.persist()
+            except Exception as save_error:
+                # persist rolls back local state on failure. Keep this action's
+                # evidence invalid locally, and retain CAS instead of overwriting
+                # a newer writer to reconcile an unsuccessful invalidation.
+                self.progress.missions[mission.id].tests_passed = False
+                raise ApplicationError(
+                    f"Falha ao encerrar os testes: {exc}; "
+                    f"não foi possível salvar a invalidação: {save_error}"
+                ) from save_error
+            raise ApplicationError(f"Falha ao encerrar os testes: {exc}") from exc
+        # Completion acceptance: cancellation observed here wins. After this
+        # boundary, save success/error is authoritative even if cancellation
+        # arrives while the repository is committing or the UI callback waits.
+        if result.cancelled or (cancel is not None and cancel.is_set()):
             progress.tests_passed = False
             self.persist()
-            return TestResult(False, -1, "Execução cancelada.", summary="Execução cancelada")
+            return TestResult(False, -1, "Execução cancelada.", summary="Execução cancelada", cancelled=True)
         progress.attempts += 1
         progress.tests_passed = result.passed
         progress.tested_solution_path = str(chosen_path)

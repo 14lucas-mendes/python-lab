@@ -7,7 +7,7 @@ import xml.etree.ElementTree as ET
 from pathlib import Path
 
 from python_lab.models import TestResult
-from python_lab.runtime.processes import ProcessRunner
+from python_lab.runtime.processes import ProcessCleanupError, ProcessRunner
 
 
 def solution_fingerprint(solution_path: Path) -> str | None:
@@ -108,6 +108,10 @@ def run_tests(
                 timeout=timeout,
                 cancel=cancel,
             )
+        except ProcessCleanupError:
+            # Cleanup failure remains an error even if cancellation caused the
+            # interruption. Do not let it become an ordinary cancelled result.
+            raise
         except FileNotFoundError as exc:
             return TestResult(
                 passed=False,
@@ -122,8 +126,8 @@ def run_tests(
             return TestResult(
                 passed=False,
                 return_code=-1,
-                output=f"Não foi possível iniciar os testes: {exc}",
-                summary="Falha ao iniciar pytest",
+                output=f"Não foi possível executar os testes: {exc}",
+                summary="Falha ao executar pytest",
             )
         if completed.timed_out or completed.cancelled:
             message = (
@@ -136,6 +140,7 @@ def run_tests(
                 passed=False, return_code=-1,
                 output=output.decode("utf-8", errors="ignore"),
                 summary="Execução cancelada" if completed.cancelled else "Execução interrompida por tempo limite",
+                cancelled=completed.cancelled,
             )
         report_complete, summary, diagnostics = _pytest_report_details(report_path)
     return TestResult(

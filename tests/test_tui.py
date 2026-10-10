@@ -377,3 +377,93 @@ def test_cancelling_pending_worker_restores_composer(app):
         assert app.current_progress().attempts == 0
 
     _drive(app, scenario)
+
+
+@pytest.mark.parametrize("phase", ["save", "callback"])
+@pytest.mark.parametrize("save_error", [False, True])
+def test_late_worker_cancel_preserves_accepted_completion(app, monkeypatch, phase, save_error):
+    import threading
+    import time
+    from python_lab.storage.errors import ProgressError
+
+    app.start("001")
+    app.save_plan(dict(input="x", output="y", steps="z", risks="w"))
+    accepted = RunnerResult(True, 0, "accepted passing result", summary="1 aprovado")
+    monkeypatch.setattr("python_lab.app.run_tests", lambda *args, **kwargs: accepted)
+    entered = threading.Event()
+    release = threading.Event()
+    original_save = app.repository.save
+
+    def save(progress):
+        if phase == "save":
+            entered.set()
+            assert release.wait(5), "Save barrier was not released"
+        if save_error:
+            raise ProgressError("controlled save failure")
+        original_save(progress)
+
+    monkeypatch.setattr(app.repository, "save", save)
+
+    async def scenario(tui, pilot):
+        queued = []
+        original_call = tui.call_from_thread
+
+        def call(callback, *args, **kwargs):
+            if phase == "callback" and callback == tui._on_tests_finished:
+                queued.append((callback, args))
+                entered.set()
+                assert release.wait(5), "Callback barrier was not released"
+                return None
+            return original_call(callback, *args, **kwargs)
+
+        monkeypatch.setattr(tui, "call_from_thread", call)
+        tui._run_tests()
+        deadline = time.monotonic() + 5
+        while not entered.is_set() and time.monotonic() < deadline:
+            await asyncio.sleep(.01)
+        try:
+            assert entered.is_set(), "Action did not reach the barrier"
+            tui._test_worker.cancel()
+            assert tui._testing
+            assert tui.query_one("#composer", Composer).disabled
+        finally:
+            release.set()
+        if phase == "callback":
+            if not save_error:
+                # A different repository may save newer user state before the
+                # completion callback. Cancellation must not restore an older
+                # snapshot over that writer's durable changes.
+                from python_lab.progress import ProgressRepository
+                other = ProgressRepository(app.repository.path)
+                newer = other.load()
+                newer.missions["001"].hints_revealed = 1
+                other.save(newer)
+            callback, args = queued.pop()
+            callback(*args)
+        deadline = time.monotonic() + 5
+        while tui._testing and time.monotonic() < deadline:
+            await asyncio.sleep(.01)
+        assert not tui._testing
+        assert not tui.query_one("#composer", Composer).disabled
+        saved = app.repository.load().missions["001"]
+        if phase == "callback" and not save_error:
+            assert saved.hints_revealed == 1
+        progress = app.current_progress()
+        events = [event for event in tui.session_log.current_events() if event["command"] == "/test"]
+        assert len(events) == 1
+        assert "cancelad" not in _transcript(tui).lower()
+        if save_error:
+            assert "controlled save failure" in _transcript(tui)
+            assert not saved.tests_passed and not progress.tests_passed
+            assert saved.attempts == progress.attempts == 0
+            assert not saved.attempt_history and not progress.attempt_history
+            assert app.last_test_result() is None and tui.last_test_result is None
+        else:
+            assert "passaram" in _transcript(tui)
+            assert saved.tests_passed and progress.tests_passed
+            assert saved.attempts == progress.attempts == 1
+            assert saved.attempt_history == progress.attempt_history
+            assert len(saved.attempt_history) == 1 and saved.attempt_history[0]["passed"]
+            assert app.last_test_result() is accepted and tui.last_test_result is accepted
+
+    _drive(app, scenario)

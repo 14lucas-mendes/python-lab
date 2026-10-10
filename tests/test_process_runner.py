@@ -52,21 +52,22 @@ def process_is_alive(pid):
     return not (stat.exists() and stat.read_text().split(") ")[1].startswith("Z"))
 
 
-def tree_command(tmp_path, parent_exits=False):
+def tree_command(tmp_path, parent_exits=False, closed_output=False):
     child = tmp_path / "child.py"
     child.write_text(
         "import os, signal, time\nfrom pathlib import Path\n"
         "if os.name != 'nt': signal.signal(signal.SIGTERM, signal.SIG_IGN)\n"
-        "os.write(1, b'x' * 2097152)\n"
-        "Path('ready').write_text(str(os.getpid()))\n"
+        + ("" if closed_output else "os.write(1, b'x' * 2097152)\n")
+        + "Path('ready').write_text(str(os.getpid()))\n"
         "while not Path('release').exists(): time.sleep(.01)\n"
         "Path('leaked').write_text('descendant survived')\n"
         "time.sleep(30)\n"
     )
     parent = (
         "import subprocess, sys, time\nfrom pathlib import Path\n"
-        "subprocess.Popen([sys.executable, 'child.py'])\n"
-        "while not Path('ready').exists(): time.sleep(.01)\n"
+        + ("subprocess.Popen([sys.executable, 'child.py'], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)\n"
+           if closed_output else "subprocess.Popen([sys.executable, 'child.py'])\n")
+        + "while not Path('ready').exists(): time.sleep(.01)\n"
         + ("" if parent_exits else "time.sleep(30)\n")
     )
     return [sys.executable, "-c", parent]
@@ -157,3 +158,85 @@ def test_runner_copies_injected_environment(tmp_path):
 def test_missing_command_raises_oserror(tmp_path):
     with pytest.raises(FileNotFoundError):
         runner().run([str(tmp_path / "missing-program")], tmp_path)
+
+
+@pytest.mark.parametrize("outcome", ["normal", "timeout", "cancel"])
+def test_closed_output_descendant_is_stopped_before_return(tmp_path, outcome):
+    cancel = threading.Event()
+    with ThreadPoolExecutor() as pool:
+        future = pool.submit(
+            runner().run, tree_command(tmp_path, parent_exits=outcome == "normal", closed_output=True),
+            tmp_path, timeout=1 if outcome == "timeout" else 5, cancel=cancel,
+        )
+        wait_for_file(tmp_path / "ready")
+        if outcome == "cancel":
+            cancel.set()
+        result = future.result(timeout=5)
+    assert result.timed_out == (outcome == "timeout")
+    assert result.cancelled == (outcome == "cancel")
+    assert_tree_stopped(tmp_path)
+
+
+@pytest.mark.skipif(os.name == "nt", reason="POSIX signal delivery synchronization seam")
+def test_closed_output_cleanup_waits_for_delayed_signal_delivery(tmp_path, monkeypatch):
+    import python_lab.runtime.processes as processes
+    delivered = threading.Event()
+    actual_killpg = os.killpg
+    group = []
+
+    def delay_signal(pgid, sig):
+        group.append((pgid, sig))
+        delivered.set()
+
+    monkeypatch.setattr(processes.os, "killpg", delay_signal)
+    with ThreadPoolExecutor() as pool:
+        future = pool.submit(runner().run, tree_command(tmp_path, parent_exits=True, closed_output=True), tmp_path)
+        try:
+            wait_for_file(tmp_path / "ready")
+            assert delivered.wait(5), "Cleanup never requested termination"
+            # Parent and its output reader are done; only the closed-output child
+            # remains. Signal delivery is held until we observe the wait.
+            from concurrent.futures import TimeoutError
+            with pytest.raises(TimeoutError):
+                future.result(timeout=.2)
+            assert process_is_alive(int((tmp_path / "ready").read_text()))
+        finally:
+            for pgid, sig in group:
+                try:
+                    actual_killpg(pgid, sig)
+                except ProcessLookupError:
+                    pass
+            future.result(timeout=5)
+    assert_tree_stopped(tmp_path)
+
+
+@pytest.mark.skipif(os.name == "nt", reason="POSIX process-group confirmation")
+def test_posix_cleanup_reports_confirmation_timeout(monkeypatch):
+    import python_lab.runtime.processes as processes
+    monkeypatch.setattr(processes, "_posix_group_has_live_members", lambda pgid: True, raising=False)
+    with pytest.raises(OSError, match="cleanup.*terminat"):
+        processes._wait_for_posix_group(123, timeout=.02)
+
+
+@pytest.mark.skipif(os.name == "nt", reason="POSIX group inspection failure")
+def test_posix_cleanup_reports_unavailable_group_inspection(monkeypatch):
+    import python_lab.runtime.processes as processes
+
+    def unavailable(pgid):
+        raise PermissionError("process state unavailable")
+
+    monkeypatch.setattr(processes, "_posix_group_has_live_members", unavailable)
+    with pytest.raises(OSError, match="cleanup could not confirm termination"):
+        processes._wait_for_posix_group(123)
+
+
+@pytest.mark.skipif(os.name == "nt", reason="POSIX cleanup error propagation")
+def test_runner_never_returns_success_when_group_cleanup_cannot_be_confirmed(tmp_path, monkeypatch):
+    import python_lab.runtime.processes as processes
+
+    def unavailable(pgid, **kwargs):
+        raise OSError("controlled cleanup confirmation failure")
+
+    monkeypatch.setattr(processes, "_wait_for_posix_group", unavailable)
+    with pytest.raises(OSError, match="cleanup confirmation failure"):
+        runner().run([sys.executable, "-c", "pass"], tmp_path)

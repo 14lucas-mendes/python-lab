@@ -141,6 +141,7 @@ def test_interruption_rejects_even_a_passing_junit(monkeypatch, tmp_path, timed_
     assert not result.passed
     assert result.return_code == -1
     assert "partial output" in result.output
+    assert result.cancelled == cancelled
 
 
 def test_runner_preserves_junit_when_output_is_truncated(tmp_path):
@@ -190,6 +191,90 @@ def test_app_passes_cancellation_without_recording_success(app, monkeypatch):
     monkeypatch.setattr("python_lab.app.run_tests", interrupted)
     result = app.run_current_tests(cancel=cancel)
     assert not result.passed
+    assert result.cancelled
     assert not app.current_progress().tests_passed
     assert not app.current_progress().attempt_history
     assert not app.repository.load().missions["001"].tests_passed
+    assert app.current_progress().attempts == 0
+    assert app.last_test_result() is None
+
+
+def test_app_honors_authoritative_cancelled_result(app, monkeypatch):
+    from python_lab.models import TestResult
+    app.start("001")
+    app.save_plan(dict(input="x", output="y", steps="z", risks="w"))
+    interrupted = TestResult(False, -1, "cancelled", cancelled=True)
+    monkeypatch.setattr("python_lab.app.run_tests", lambda *args, **kwargs: interrupted)
+    result = app.run_current_tests(cancel=threading.Event())
+    assert result.cancelled and not result.passed
+    assert app.current_progress().attempts == 0
+    assert not app.current_progress().attempt_history
+    assert not app.repository.load().missions["001"].tests_passed
+    assert app.last_test_result() is None
+
+
+def test_runner_reports_cleanup_failure_as_execution_error(monkeypatch, tmp_path):
+    def failed_cleanup(*args, **kwargs):
+        raise OSError("POSIX process cleanup did not finish terminating")
+
+    monkeypatch.setattr("python_lab.test_runner.ProcessRunner.run", failed_cleanup)
+    result = run_tests(tmp_path, tmp_path)
+    assert not result.passed and not result.cancelled
+    assert result.return_code == -1
+    assert "cleanup did not finish terminating" in result.output
+    assert result.summary == "Falha ao executar pytest"
+
+
+@pytest.mark.parametrize("preexisting_pass", [False, True])
+def test_app_surfaces_cleanup_failure_even_when_worker_is_cancelled(app, monkeypatch, preexisting_pass):
+    from python_lab.app import ApplicationError
+    from python_lab.runtime.processes import ProcessCleanupError
+    app.start("001")
+    app.save_plan(dict(input="x", output="y", steps="z", risks="w"))
+    app.current_progress().tests_passed = preexisting_pass
+    app.persist()
+    cancel = threading.Event()
+
+    def cleanup_failed(*args, **kwargs):
+        cancel.set()
+        raise ProcessCleanupError("cleanup could not confirm termination")
+
+    monkeypatch.setattr("python_lab.test_runner.ProcessRunner.run", cleanup_failed)
+    with pytest.raises(ApplicationError, match="cleanup could not confirm termination"):
+        app.run_current_tests(cancel=cancel)
+    assert app.current_progress().attempts == 0
+    assert not app.current_progress().tests_passed
+    assert not app.current_progress().attempt_history
+    assert app.last_test_result() is None
+    assert not app.repository.load().missions["001"].tests_passed
+
+
+def test_cleanup_failure_preserves_newer_repository_writer(app, monkeypatch):
+    from python_lab.app import ApplicationError
+    from python_lab.progress import ProgressRepository
+    from python_lab.runtime.processes import ProcessCleanupError
+    app.start("001")
+    app.save_plan(dict(input="x", output="y", steps="z", risks="w"))
+    app.current_progress().tests_passed = True
+    app.persist()
+    cancel = threading.Event()
+
+    def cleanup_failed(*args, **kwargs):
+        other = ProgressRepository(app.repository.path)
+        newer = other.load()
+        newer.missions["001"].hints_revealed = 1
+        other.save(newer)
+        cancel.set()
+        raise ProcessCleanupError("cleanup could not confirm termination")
+
+    monkeypatch.setattr("python_lab.test_runner.ProcessRunner.run", cleanup_failed)
+    with pytest.raises(ApplicationError, match="cleanup could not confirm termination.*Conflito"):
+        app.run_current_tests(cancel=cancel)
+    assert not app.current_progress().tests_passed
+    assert app.current_progress().attempts == 0
+    assert not app.current_progress().attempt_history
+    assert app.last_test_result() is None
+    saved = app.repository.load().missions["001"]
+    assert saved.hints_revealed == 1
+    assert saved.tests_passed  # Newer writer is authoritative; no stale undo.
+    assert saved.attempts == 0 and not saved.attempt_history
