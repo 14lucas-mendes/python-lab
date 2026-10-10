@@ -321,7 +321,7 @@ def test_tui_unreadable_fingerprint_keeps_composer_available(app, monkeypatch):
 def test_worker_cancellation_waits_for_real_process_cleanup(app, tmp_path):
     import time
     from dataclasses import replace
-    from test_process_runner import tree_command, assert_tree_stopped
+    from tests.test_process_runner import tree_command, assert_tree_stopped
 
     command = tree_command(tmp_path)
     suite = tmp_path / "test_hanging_tree.py"

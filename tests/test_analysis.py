@@ -333,7 +333,7 @@ def test_cleanup_failure_remains_authoritative(tmp_path):
 
 def test_native_cancelled_analysis_waits_for_process_tree_cleanup(tmp_path):
     from python_lab.runtime.processes import ProcessRunner
-    from test_process_runner import assert_tree_stopped, tree_command, wait_for_file
+    from tests.test_process_runner import assert_tree_stopped, tree_command, wait_for_file
 
     service, _, cancelled = api()
     cancel = threading.Event()
