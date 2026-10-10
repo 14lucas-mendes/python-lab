@@ -33,6 +33,14 @@ def test_missing_model_has_no_invented_default(tmp_path):
     assert settings_module().load_settings(tmp_path).model is None
 
 
+@pytest.mark.parametrize("contents", ["", 'model="SECRET-DO-NOT-ECHO"\n', "max_output_tokens=100\n"])
+def test_present_config_requires_explicit_provider(tmp_path, contents, caplog):
+    (tmp_path / "config.toml").write_text(contents)
+    with pytest.raises(AssistantError, match="provider") as caught:
+        settings_module().load_settings(tmp_path)
+    assert "SECRET-DO-NOT-ECHO" not in str(caught.value) + caplog.text
+
+
 @pytest.mark.parametrize("field", ["timeout_seconds", "max_output_tokens", "max_session_output_tokens"])
 @pytest.mark.parametrize("value", [-1, 0, True, 1.5, "30", None])
 def test_config_rejects_invalid_numeric_values(field, value):

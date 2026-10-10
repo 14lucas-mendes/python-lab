@@ -40,4 +40,6 @@ def load_settings(data_dir: Path) -> AssistantSettings:
         raise AssistantError("Não foi possível ler config.toml; verifique a configuração TOML.") from None
     if set(values) - {field.name for field in fields(AssistantSettings)}:
         raise AssistantError("config.toml contém campos desconhecidos; chaves devem ficar em LAB_API_KEY.")
-    return AssistantSettings(**{"provider": "disabled", "model": None, **values})
+    if "provider" not in values:
+        raise AssistantError("Configure provider='openai' em config.toml.")
+    return AssistantSettings(**{"model": None, **values})
