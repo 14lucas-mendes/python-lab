@@ -34,11 +34,17 @@ def run(command, cwd, *, timeout=180):
     return result
 
 
-@pytest.mark.parametrize("template", ["cli", "fastapi"])
-def test_generated_project_in_clean_venv(tmp_path, template):
+@pytest.mark.parametrize("template,project_name", [
+    pytest.param("cli", "cli-app", id="cli"),
+    pytest.param("fastapi", "fastapi-app", id="fastapi"),
+    pytest.param("cli", "app-__distribution__x", id="cli_literal_token"),
+    pytest.param("fastapi", "app-__distribution__x", id="fastapi_literal_token"),
+])
+def test_generated_project_in_clean_venv(tmp_path, template, project_name):
     # Supported Lab artifact: editable install. -I + outside cwd ensures the
     # generator/resources are available through the installed artifact.
-    target = tmp_path / f"{template}-app"
+    target = tmp_path / project_name
+    package = project_name.replace("-", "_")
     run([
         sys.executable, "-I", "-c",
         "from importlib import metadata; import json; "
@@ -59,14 +65,14 @@ def test_generated_project_in_clean_venv(tmp_path, template):
     suite = run([python, "-m", "pytest", "-q"], target)
     assert "1 passed" in suite.stdout
     if template == "cli":
-        command = run([python, "-m", "cli_app.main", "--name", "Ana"], target)
+        command = run([python, "-m", f"{package}.main", "--name", "Ana"], target)
         assert command.stdout == "Olá, Ana!\n"
-        console = executable_dir / ("cli_app.exe" if os.name == "nt" else "cli_app")
+        console = executable_dir / (f"{package}.exe" if os.name == "nt" else package)
         assert run([console, "--name", "Ana"], target).stdout == "Olá, Ana!\n"
     else:
         request = run([
             python, "-c",
-            "from fastapi.testclient import TestClient; from fastapi_app.main import app; "
+            f"from fastapi.testclient import TestClient; from {package}.main import app; "
             "client = TestClient(app); response = client.get('/health'); "
             "assert response.status_code == 200; "
             "assert response.json() == {'status': 'ok'}; print(response.status_code, response.json())",

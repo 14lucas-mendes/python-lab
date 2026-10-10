@@ -249,3 +249,90 @@ def test_invalid_distribution_names_are_rejected_before_generation(tmp_path, nam
     with pytest.raises(AssistantError):
         Service().create("cli", tmp_path / name)
     assert list(tmp_path.iterdir()) == []
+
+
+@pytest.mark.parametrize("template", ["cli", "fastapi"])
+@pytest.mark.parametrize("name", ["app__distribution__x", "app__package__x", "app-__distribution__x", "app-__package__x"])
+def test_literal_token_in_name_remains_data_in_all_generated_references(tmp_path, template, name):
+    _, Service, _ = scaffold_api()
+    target = tmp_path / name
+    package = name.replace("-", "_")
+    result = Service().create(template, target)
+    manifest = tomllib.loads((target / "pyproject.toml").read_text())
+    assert manifest["project"]["name"] == name
+    assert target / f"src/{package}/main.py" in result.files
+    generated_test = (target / "tests/test_app.py").read_text()
+    assert f"from {package}.main import " in generated_test
+    # Parse actual imports as Python, including hyphenated token-bearing names.
+    import ast
+    ast.parse(generated_test)
+    if template == "cli":
+        assert manifest["project"]["scripts"] == {package: f"{package}.main:main"}
+        assert f"-m {package}.main --name Ana" in (target / "README.md").read_text()
+    else:
+        assert f"-m uvicorn {package}.main:app --reload" in (target / "README.md").read_text()
+    assert f'"""{name} application."""' in (target / f"src/{package}/__init__.py").read_text()
+
+
+@pytest.mark.parametrize("template,name", [
+    ("fastapi", "fastapi"), ("fastapi", "FastAPI"),
+    ("cli", "pytest"), ("fastapi", "pytest"),
+    ("cli", "argparse"), ("fastapi", "argparse"),
+    ("cli", "sys"), ("fastapi", "typing"),
+    ("cli", "pip"), ("cli", "setuptools"), ("cli", "wheel"),
+    ("cli", "packaging"), ("cli", "pluggy"), ("cli", "iniconfig"), ("cli", "Pygments"),
+    ("fastapi", "uvicorn"), ("fastapi", "starlette"),
+    ("fastapi", "httpx"), ("fastapi", "httpcore"), ("fastapi", "h11"),
+    ("fastapi", "anyio"), ("fastapi", "certifi"), ("fastapi", "click"), ("fastapi", "idna"),
+    ("fastapi", "pydantic"), ("fastapi", "pydantic_core"), ("fastapi", "pydantic-core"),
+    ("fastapi", "Pydantic--Core"), ("fastapi", "typing_extensions"),
+    ("fastapi", "typing-extensions"), ("fastapi", "typing_inspection"),
+    ("fastapi", "annotated_doc"), ("fastapi", "annotated-types"),
+])
+def test_distribution_and_import_namespace_collisions_rejected_before_creation(tmp_path, template, name, monkeypatch):
+    _, Service, _ = scaffold_api()
+    def resource_read_forbidden(*args, **kwargs):
+        pytest.fail("Collision validation must precede resource reads and target creation")
+    monkeypatch.setattr(resources, "files", resource_read_forbidden)
+    with pytest.raises(AssistantError, match="[Cc]onflit"):
+        Service().create(template, tmp_path / name)
+    assert list(tmp_path.iterdir()) == []
+
+
+def test_dependency_collisions_are_template_specific(tmp_path):
+    _, Service, _ = scaffold_api()
+    result = Service().create("cli", tmp_path / "fastapi")
+    assert (result.target / "src/fastapi/main.py").is_file()
+
+
+@pytest.mark.parametrize("template", ["cli", "fastapi"])
+def test_platform_dev_dependency_colorama_collision_is_rejected(tmp_path, template):
+    _, Service, _ = scaffold_api()
+    with pytest.raises(AssistantError, match="[Cc]onflit"):
+        Service().create(template, tmp_path / "colorama")
+    assert list(tmp_path.iterdir()) == []
+
+
+def test_native_windows_absolute_target_name_validation():
+    scaffold_api()
+    from pathlib import PureWindowsPath
+    from python_lab.scaffolding.service import _project_package
+    target = PureWindowsPath(r"C:\Users\developer\new projects\my-app")
+    assert _project_package("cli", target) == "my_app"
+    assert _project_package("fastapi", target) == "my_app"
+
+
+@pytest.mark.parametrize("target", [r"C:\Users\developer\..\escape", r"C:\Users\developer\bad name", r"C:\Users\developer\class"])
+def test_windows_target_traversal_and_invalid_basename_remain_rejected(target):
+    scaffold_api()
+    from pathlib import PureWindowsPath
+    from python_lab.scaffolding.service import _project_package
+    with pytest.raises(AssistantError):
+        _project_package("cli", PureWindowsPath(target))
+
+
+def test_filesystem_create_still_requires_a_native_path_object(tmp_path):
+    _, Service, _ = scaffold_api()
+    with pytest.raises(AssistantError, match="Path"):
+        Service().create("cli", str(tmp_path / "app"))
+    assert list(tmp_path.iterdir()) == []

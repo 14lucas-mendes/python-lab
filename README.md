@@ -193,11 +193,14 @@ O workflow primeiro prova ajuda, versão e missão clássica sem extras; depois 
 Os scaffolds curados `cli` e `fastapi` estão disponíveis pela API
 `ScaffoldService().create(template, Path(destino))`, em `python_lab.scaffolding`.
 O destino deve ser inexistente e ter nome Python válido (hífens viram underscores
-no pacote). A geração lê recursos empacotados e só cria arquivos: instalação e
-execução ficam nos comandos Linux/Windows do README gerado.
+no pacote). Nomes que conflitam com módulos da biblioteca padrão ou com as
+dependências e ferramentas conhecidas do template são rejeitados antes da criação.
+A geração lê recursos empacotados e só cria arquivos: instalação e execução ficam
+nos comandos Linux/Windows do README gerado.
 
-A suíte normal mantém a geração offline e pula os dois smokes que instalam
-projetos. Para validar o artefato suportado (checkout instalado em modo editável),
+A suíte normal mantém a geração offline e pula os smokes que instalam
+projetos, incluindo as regressões de nomes que contêm tokens literais do template.
+Para validar o artefato suportado (checkout instalado em modo editável),
 execute separadamente a preparação e os testes funcionais em um venv novo por
 template; esse comando acessa o índice de pacotes na instalação:
 

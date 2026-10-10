@@ -3,13 +3,45 @@
 from importlib import resources
 import keyword
 import os
-from pathlib import Path, PurePosixPath
+from pathlib import Path, PurePath, PurePosixPath
 import re
 import stat
+import sys
 
 from python_lab.assistant.errors import AssistantError
 from python_lab.scaffolding import registry
 from python_lab.scaffolding.models import ScaffoldResult
+
+
+_NAME_TOKENS = re.compile(r"__package__|__distribution__")
+
+
+def _render_names(text: str, names: dict[str, str]) -> str:
+    # A callback replaces tokens from the original text only; inserted project
+    # names remain literal data even when they contain another token's spelling.
+    return _NAME_TOKENS.sub(lambda match: names[match.group()], text)
+
+
+def _project_package(template: str, target: PurePath) -> str:
+    package = target.name.replace("-", "_")
+    if (
+        not target.name
+        or ".." in target.parts
+        or not re.fullmatch(r"[A-Za-z0-9](?:[A-Za-z0-9_-]*[A-Za-z0-9])?", target.name)
+        or not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", package)
+        or not package.isidentifier()
+        or keyword.iskeyword(package)
+    ):
+        raise AssistantError("Nome de projeto Python inválido ou destino com travessia.")
+    canonical_distribution = re.sub(r"[-_.]+", "-", target.name).lower()
+    dependencies = registry.DEPENDENCY_NAMES[template]
+    if (
+        canonical_distribution in dependencies
+        or package.lower() in dependencies.values()
+        or package.lower() in sys.stdlib_module_names
+    ):
+        raise AssistantError("Nome de projeto em conflito com dependência ou módulo padrão.")
+    return package
 
 
 def _relative_path(value: str) -> PurePosixPath:
@@ -72,17 +104,8 @@ class ScaffoldService:
             raise AssistantError(f"Template desconhecido: {template}.")
         if not isinstance(target, Path):
             raise AssistantError("Destino deve ser Path.")
-        package = target.name.replace("-", "_")
-        if (
-            not target.name
-            or ".." in target.parts
-            or "\\" in str(target)
-            or not re.fullmatch(r"[A-Za-z0-9](?:[A-Za-z0-9_-]*[A-Za-z0-9])?", target.name)
-            or not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", package)
-            or not package.isidentifier()
-            or keyword.iskeyword(package)
-        ):
-            raise AssistantError("Nome de projeto Python inválido ou destino com travessia.")
+        package = _project_package(template, target)
+        names = {"__package__": package, "__distribution__": target.name}
         if target.exists() or target.is_symlink():
             raise AssistantError("Destino já existe.")
 
@@ -92,7 +115,7 @@ class ScaffoldService:
         rendered: dict[Path, bytes] = {}
         for source in registry.TEMPLATES[template]:
             source_path = _relative_path(source)
-            destination = _relative_path(source.replace("__package__", package))
+            destination = _relative_path(_render_names(source, names))
             path = target.joinpath(*destination.parts)
             if path in rendered:
                 raise AssistantError("Path de template duplicado.")
@@ -100,7 +123,7 @@ class ScaffoldService:
                 text = root.joinpath(*source_path.parts).read_text(encoding="utf-8")
             except (OSError, UnicodeError) as exc:
                 raise AssistantError(f"Recurso de template indisponível: {source}.") from exc
-            rendered[path] = text.replace("__package__", package).replace("__distribution__", target.name).encode("utf-8")
+            rendered[path] = _render_names(text, names).encode("utf-8")
 
         directories: dict[Path, tuple[int, int]] = {}
         files: dict[Path, tuple[tuple[int, int], bytes]] = {}
