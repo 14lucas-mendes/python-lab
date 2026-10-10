@@ -204,6 +204,30 @@ class AssistantAnswer:
             raise AssistantError("Usage inválido.")
 
 
+@dataclass(frozen=True)
+class ReviewReply:
+    answer: AssistantAnswer
+    changes: tuple[FileChange, ...]
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.answer, AssistantAnswer):
+            raise AssistantError("Resposta de revisão inválida.")
+        if not isinstance(self.changes, tuple) or not all(
+            isinstance(change, FileChange) for change in self.changes
+        ):
+            raise AssistantError("Alterações de revisão inválidas.")
+        if len(self.changes) > MAX_SOURCE_FILES or len(
+            {change.path for change in self.changes}
+        ) != len(self.changes):
+            raise AssistantError("Alterações de revisão duplicadas ou excessivas.")
+
+
+class ReviewProvider(Protocol):
+    def review(self, request: AssistantRequest) -> Awaitable[ReviewReply]:
+        """Return one structured review response."""
+        ...
+
+
 class LLMProvider(Protocol):
     def generate(self, request: AssistantRequest) -> Awaitable[AssistantAnswer]:
         """Generate an answer; concrete providers belong to the optional adapter."""
@@ -244,3 +268,31 @@ def validate_answer(payload: Mapping[str, object], snapshot: WorkspaceSnapshot) 
         assistance_level=answer["assistance_level"],
         usage=Usage(usage["input_tokens"], usage["output_tokens"]),
     )
+
+def validate_review(
+    payload: Mapping[str, object], snapshot: WorkspaceSnapshot, usage: Usage
+) -> ReviewReply:
+    review = _mapping(payload, {"answer", "changes"}, "Revisão")
+    answer = validate_answer(
+        {
+            **_mapping(
+                review["answer"],
+                {"summary", "explanation", "steps", "references", "assistance_level"},
+                "Conselho",
+            ),
+            "usage": {
+                "input_tokens": usage.input_tokens,
+                "output_tokens": usage.output_tokens,
+            },
+        },
+        snapshot,
+    )
+    selected = {source.path: source.sha256 for source in snapshot.sources}
+    changes = []
+    for item in _array(review["changes"], "Alterações"):
+        raw = _mapping(item, {"path", "before_sha256", "after_text"}, "Alteração")
+        change = FileChange(**raw)
+        if selected.get(change.path) != change.before_sha256:
+            raise AssistantError("Alteração fora da seleção ou com hash base inválido.")
+        changes.append(change)
+    return ReviewReply(answer, tuple(changes))

@@ -9,7 +9,8 @@ import os
 from typing import TypeVar
 
 from python_lab.assistant.errors import AssistantError
-from python_lab.assistant.models import AssistantAnswer, AssistantRequest, Usage, WorkspaceSnapshot, validate_answer
+from python_lab.assistant.models import (AssistantAnswer, AssistantRequest, ReviewReply, Usage,
+    WorkspaceSnapshot, validate_answer, validate_review)
 from python_lab.assistant.provider import UsageBudget
 from python_lab.assistant.settings import AssistantSettings
 
@@ -31,6 +32,23 @@ ANSWER_SCHEMA = _object({
     })},
     "assistance_level": {"type": "integer", "minimum": 0, "maximum": 4},
 })
+
+
+REVIEW_SCHEMA = _object(
+    {
+        "answer": ANSWER_SCHEMA,
+        "changes": {
+            "type": "array",
+            "items": _object(
+                {
+                    "path": {"type": "string"},
+                    "before_sha256": {"type": "string"},
+                    "after_text": {"type": "string"},
+                }
+            ),
+        },
+    }
+)
 
 
 def _input(request: AssistantRequest) -> list[dict[str, str]]:
@@ -149,6 +167,16 @@ class OpenAIProvider:
 
     async def generate(self, request: AssistantRequest) -> AssistantAnswer:
         return await self.transport.generate(request, schema=ANSWER_SCHEMA, schema_name="assistant_answer", validate=_answer)
+
+    async def review(self, request: AssistantRequest) -> ReviewReply:
+        if request.action != "review":
+            raise AssistantError("Ação de revisão esperada.")
+        return await self.transport.generate(
+            request,
+            schema=REVIEW_SCHEMA,
+            schema_name="review_reply",
+            validate=validate_review,
+        )
 
     async def aclose(self) -> None:
         await self._client.close()

@@ -3,9 +3,9 @@
 from uuid import uuid4
 
 from python_lab.assistant.errors import AssistantError
-from python_lab.assistant.models import LLMProvider
+from python_lab.assistant.models import LLMProvider, ReviewProvider
 
-__all__ = ["LLMProvider", "UsageBudget"]
+__all__ = ["LLMProvider", "ReviewProvider", "UsageBudget"]
 
 
 def _tokens(value: object, *, positive: bool = False) -> None:
