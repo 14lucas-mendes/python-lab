@@ -1,4 +1,5 @@
 from importlib import metadata
+import asyncio
 from io import StringIO
 import shlex
 from pathlib import Path
@@ -8,12 +9,17 @@ from rich.console import Console
 from rich.text import Text
 
 from textual.app import App, ComposeResult
+from textual.binding import Binding
 from textual.containers import Horizontal, Vertical, VerticalScroll
 from textual.css.query import NoMatches
-from textual.widgets import Input, Label, Markdown, Static
+from textual.widgets import Button, Input, Label, Markdown, Static
 from textual.worker import get_current_worker
 
 from python_lab.app import ApplicationError, PythonLabApp
+from python_lab.assistant.commands import AssistantCommands
+from python_lab.assistant.errors import ContextError
+from python_lab.assistant.service import AssistantService
+from python_lab.workspace import Workspace
 from python_lab.commands import ALIASES, COMMANDS, parse_command
 from python_lab.learning import HintError, LearningError
 from python_lab.models import TestResult
@@ -29,11 +35,15 @@ APP_VERSION = metadata.version("python-lab")
 
 class PythonLabTUI(App[None]):
     CSS_PATH = Path(__file__).with_name("lab.tcss")
+    BINDINGS = [Binding("ctrl+c", "quit_lab", "Cancelar / sair", show=False)]
 
     def __init__(
         self,
         lab: PythonLabApp,
         session_log: SessionLog | None = None,
+        assistant_project: Path | None = None,
+        assistant_service: AssistantService | None = None,
+        assistant_mode: str = "assistant",
     ) -> None:
         super().__init__()
         from python_lab.cli import PythonLabCLI
@@ -49,7 +59,14 @@ class PythonLabTUI(App[None]):
             force_terminal=False,
             legacy_windows=False,
         )
-        self.cli = PythonLabCLI(app=lab, console=self.output_console, session_log=session_log)
+        self.cli = PythonLabCLI(app=lab, console=self.output_console, session_log=session_log,
+                                assistant_project=assistant_project, assistant_mode=assistant_mode)
+        self.assistant_project = Workspace(assistant_project).root if assistant_project else None
+        self.assistant_mode = assistant_mode
+        self.assistant_service = assistant_service
+        self._assistant_task: asyncio.Task | None = None
+        self._assistant_cancel: Event | None = None
+        self._assistant_exiting = False
         self.last_test_result: TestResult | None = None
         self.transcript_entries: list[str] = []
         self._testing = False
@@ -68,6 +85,7 @@ class PythonLabTUI(App[None]):
         yield Static(id="last-result", markup=False)
         yield Static(id="actions", markup=False)
         yield CommandPalette(id="palette")
+        yield Button("Cancelar ação (/cancel)", id="assistant-cancel")
         with Vertical(id="composer-wrap"):
             with Horizontal(id="composer-row"):
                 yield Label("lab ›", id="prompt-mark")
@@ -82,6 +100,8 @@ class PythonLabTUI(App[None]):
                 self._show_document(current)
             except ApplicationError as exc:
                 self._append_response(str(exc))
+        elif self.assistant_project is not None:
+            self._append_response(f"Projeto: {self.assistant_project}\nUse /explain-code, /diagnose ou /check.")
         else:
             self._append_response(
                 "Python Lab\n\nEscolha uma missão com /missions. "
@@ -92,11 +112,22 @@ class PythonLabTUI(App[None]):
         palette = self._palette()
         if palette is not None:
             palette.display = False
+        self.query_one("#assistant-cancel", Button).display = False
         composer = self._composer()
         if composer is not None:
             composer.focus()
 
-    def on_unmount(self) -> None:
+    async def on_unmount(self) -> None:
+        if self._assistant_task is not None:
+            self._assistant_exiting = False
+            self._assistant_cancel.set()
+            task = self._assistant_task
+            task.cancel()
+            try:
+                await task
+            except asyncio.CancelledError:
+                pass
+        await self.cli.assistant_runtime.aclose()
         if self._status_timer is not None:
             self._status_timer.stop()
         self._close_session("Sessão encerrada")
@@ -116,6 +147,12 @@ class PythonLabTUI(App[None]):
         except NoMatches:
             return None
 
+    def _cancel_button(self) -> Button | None:
+        try:
+            return self._shell().query_one("#assistant-cancel", Button)
+        except NoMatches:
+            return None
+
     def _next_step_bar(self) -> NextStepBar | None:
         try:
             return self._shell().query_one("#next-step", NextStepBar)
@@ -123,6 +160,10 @@ class PythonLabTUI(App[None]):
             return None
 
     def action_quit_lab(self) -> None:
+        if self._assistant_task is not None:
+            self._assistant_exiting = True
+            self._cancel_assistant()
+            return
         self.cli.exit()
         self._flush_console()
         self.exit()
@@ -225,6 +266,27 @@ class PythonLabTUI(App[None]):
             self._append_response(str(exc))
             self._record(stripped, str(exc))
             return
+        if command == "/cancel":
+            self._cancel_assistant()
+            return
+        if self._assistant_task is not None:
+            self._append_response("Ação em curso; use /cancel.")
+            return
+        if command == "/project":
+            self.cli._local_assistant_setting(command, parse_command(stripped).args)
+            self.assistant_project = self.cli.assistant_project
+            self._flush_console()
+            self._refresh_status()
+            return
+        if command == "/mode":
+            self.cli._local_assistant_setting(command, parse_command(stripped).args)
+            self.assistant_mode = self.cli.assistant_mode
+            self._flush_console()
+            self._refresh_status()
+            return
+        if command in {"/explain-code", "/diagnose", "/check"}:
+            self._start_assistant(command, parse_command(stripped).args)
+            return
         if command in {"/mission", "/concepts"}:
             mission_id = argument.strip() or self.lab.progress.current_mission_id
             if not mission_id:
@@ -260,6 +322,89 @@ class PythonLabTUI(App[None]):
         self._refresh_status()
         if not keep:
             self.exit()
+
+    def _start_assistant(self, command: str, args: tuple[str, ...]) -> None:
+        try:
+            workspace = Workspace(self.assistant_project or Path.cwd())
+        except ContextError as exc:
+            self._append_response(str(exc))
+            return
+        handlers = AssistantCommands(self.assistant_service, workspace, self.assistant_mode,
+            app=self.lab, service_factory=self.cli.assistant_runtime.get_service)
+        action = {"/explain-code": handlers.explain, "/diagnose": handlers.diagnose,
+                  "/check": handlers.check}[command]
+        cancel = self._assistant_cancel = Event()
+        composer = self._composer()
+        if composer is not None:
+            composer.placeholder = "Ação em curso; digite /cancel ou Ctrl+C"
+        button = self._cancel_button()
+        if button is not None:
+            button.display = True
+        self._append_response("Analisando projeto... Use /cancel para interromper.")
+
+        async def run():
+            result = None
+            try:
+                result = await action(args, cancel=cancel)
+            except asyncio.CancelledError:
+                # AssistantService and local analysis return only after cleanup.
+                pass
+            except Exception as exc:
+                self._append_response(str(exc))
+            finally:
+                if cancel is self._assistant_cancel:
+                    self._assistant_task = None
+                    self._assistant_cancel = None
+                    button = self._cancel_button()
+                    if button is not None:
+                        button.display = False
+                    if result is not None and not cancel.is_set():
+                        self._append_response(result.message)
+                        if result.ok:
+                            self._record(command, "Assistência concluída")
+                    elif cancel.is_set():
+                        self._append_response("Ação cancelada.")
+                    composer = self._composer()
+                    if composer is not None:
+                        composer.disabled = False
+                        composer.placeholder = "Digite / para comandos"
+                        composer.focus()
+                    self._refresh_status()
+                    if self._assistant_exiting:
+                        self._assistant_exiting = False
+                        self.action_quit_lab()
+        task = self._assistant_task = asyncio.create_task(run())
+        def pending_cancelled(done):
+            if done.cancelled() and self._assistant_task is done:
+                self._assistant_task = None
+                self._assistant_cancel = None
+                button = self._cancel_button()
+                if button is not None:
+                    button.display = False
+                composer = self._composer()
+                if composer is not None:
+                    composer.disabled = False
+                    composer.placeholder = "Digite / para comandos"
+                    composer.focus()
+                self._append_response("Ação cancelada.")
+                self._refresh_status()
+                if self._assistant_exiting:
+                    self._assistant_exiting = False
+                    self.action_quit_lab()
+        task.add_done_callback(pending_cancelled)
+
+    def on_button_pressed(self, event: Button.Pressed) -> None:
+        if event.button.id == "assistant-cancel":
+            self._cancel_assistant()
+
+    def _cancel_assistant(self) -> None:
+        if self._assistant_task is None:
+            self._append_response("Nenhuma ação em curso.")
+            return
+        assert self._assistant_cancel is not None
+        self._assistant_cancel.set()
+        self._assistant_task.cancel()
+        self._append_response("Cancelando; aguardando limpeza...")
 
     def _open_plan(self) -> None:
         try:
@@ -444,7 +589,7 @@ class PythonLabTUI(App[None]):
 
     def _update_status(self) -> None:
         self.output_console.size = (max(20, self.size.width - 4), max(1, self.size.height))
-        if self._testing:
+        if self._testing or self._assistant_task is not None:
             return
         next_step = self._next_step_bar()
         if next_step is None:
@@ -484,6 +629,10 @@ class PythonLabTUI(App[None]):
             if mission:
                 actions += [f"/mission {mission.id}", f"/start {mission.id}"]
         shell.query_one("#stages", Static).update(stages)
+        if self.assistant_project is not None:
+            actions += ["/explain-code", "/diagnose", "/check", "/mode", "/project off"]
+        else:
+            actions += ["/project"]
         shell.query_one("#actions", Static).update("Ações: " + "  ".join(actions) + "  · / para todos")
         result = snapshot.last_result
         if result:

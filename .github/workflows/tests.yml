@@ -62,6 +62,24 @@ jobs:
           smoke help "$LAB" --help
           smoke version "$LAB" --version
           printf '/missions\n/exit\n' | smoke classic "$LAB" --classic --data-dir "$RUNNER_TEMP/python-lab-state"
+      - name: Base assistant and classic checks without optional extras
+        shell: bash
+        run: |
+          "$PYTHON" -m pytest -q tests/test_assistant_cli.py tests/test_assistant_tui.py tests/test_assistant_journey.py tests/test_cli_entrypoint.py::test_classic_without_assistant_extra
+      - name: Install optional local analysis with tested constraints
+        shell: bash
+        run: |
+          "$PYTHON" -m pip install -c constraints/dev.txt -c constraints/analysis.txt -e '.[analysis]'
+          "$PYTHON" -m pip check
+      - name: Install official assistant SDK with tested constraints
+        shell: bash
+        run: |
+          "$PYTHON" -m pip install -c constraints/dev.txt -c constraints/assistant.txt -e '.[assistant]'
+          "$PYTHON" -m pip check
+      - name: Offline official SDK and analysis adapter proofs
+        shell: bash
+        run: |
+          "$PYTHON" -m pytest -q tests/test_analysis.py tests/test_assistant_provider.py tests/test_assistant_cli.py tests/test_assistant_tui.py tests/test_assistant_journey.py
       - name: Native PowerShell installer validation
         if: runner.os == 'Windows'
         shell: pwsh

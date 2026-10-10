@@ -86,7 +86,7 @@ O campo de baixo aceita os mesmos comandos com barra da CLI. Digite `/` para fil
 | `Esc` | Fechar o menu ou limpar o campo |
 | `PageUp` / `PageDown` | Rolar o conteúdo mantendo o campo de comandos ativo |
 | `q` | Sair, se o campo estiver vazio |
-| `Ctrl+C` | Salvar e encerrar |
+| `Ctrl+C` | Cancelar a ação ativa (aguarda limpeza); sem ação, salvar e encerrar |
 
 A TUI lê os campos de texto em Unicode, então acentos no plano e na explicação são gravados corretamente.
 
@@ -111,8 +111,45 @@ A TUI lê os campos de texto em Unicode, então acentos no plano e na explicaç�
 | `/history` | `/hi` | Exibir histórico de tentativas da missão atual |
 | `/session` | `/se` | Exibir o histórico desta sessão (`/session all` lista as anteriores) |
 | `/evidence` | `/ev` | Exibir evidências de competências |
+| `/project <diretório>` | | Abrir projeto do assistente; `/project off` retorna às missões |
+| `/mode assistant|tutor` | | Escolher modo da assistência |
+| `/explain-code <arquivo>` | | Explicar código selecionado |
+| `/diagnose --traceback <arquivo> --file <fonte>` | | Diagnosticar erro com contexto selecionado |
+| `/check <arquivo>` | | Executar verificação local |
+| `/cancel` | | Cancelar a ação ativa |
 | `/help` | `/?` | Listar comandos disponíveis |
 | `/exit` | `/q` | Salvar e encerrar com segurança |
+
+## Assistente local (opcional)
+
+`lab` sem `--project` continua abrindo as missões. `lab --project "C:\meus projetos\app"` abre a TUI no projeto indicado; o catálogo das 11 missões permanece separado. Use `/project <diretório>` para trocar de projeto e `/project off` para voltar à vista de missões. `/mode assistant` dá ajuda direta e `/mode tutor` orienta o aprendizado. A missão ativa é preservada na troca de vista. `/explain` continua registrando a explicação **do aluno** e pode concluir a missão; `/explain-code` apenas explica arquivos selecionados e nunca conclui uma missão.
+
+Ações de terminal de uma só execução:
+
+```bash
+lab check src/app.py --project "/caminho/com espaços/projeto" --json
+lab explain src/app.py --project "/caminho/projeto" --mode tutor --level 0
+lab diagnose --traceback erro.txt --file src/app.py --project "/caminho/projeto"
+```
+
+`--data-dir` escolhe o diretório local de configuração e histórico; `--json` retorna `schema_version: 1`, `action`, `ok`, `message` e `data`. Códigos de saída: 0 para verificação concluída (mesmo com achados), 2 para uso/configuração, 1 para falha de execução. Cada invocação `lab explain` ou `lab diagnose` começa um orçamento novo; TUI e prompt clássico compartilham um provider e orçamento por sessão local. `check` roda localmente sem chave, modelo ou SDK. Achados incluem ferramentas indisponíveis; sem o extra de análise, a análise continua usando seus checks locais disponíveis.
+
+Para respostas de IA, instale o extra opcional e crie `config.toml` no diretório de dados do usuário:
+
+```toml
+provider = "openai"
+model = "NOME-DO-MODELO-ESCOLHIDO"
+timeout_seconds = 30
+max_output_tokens = 2000
+max_session_output_tokens = 20000
+```
+
+```bash
+python -m pip install -c constraints/dev.txt -c constraints/assistant.txt -e '.[assistant]'
+export LAB_API_KEY='sua chave'  # configure no ambiente seguro; nunca no TOML
+```
+
+No PowerShell, configure `LAB_API_KEY` como variável de ambiente do processo antes de iniciar `lab`. Nenhum modelo é escolhido automaticamente e a chave nunca entra no TOML. As respostas dependem de rede e consomem tokens; o limite configurado cobre tokens de **saída** por sessão, não custo total. Não há repetição automática após erro. Cada seleção é explícita e limitada a 20 arquivos, 32768 bytes por arquivo e 131072 bytes no total. Código, traceback e respostas são exibidos como texto literal; a assistência não altera arquivos do projeto nem registra conclusões de missão. Na TUI, `/cancel`, o botão Cancelar ou Ctrl+C interrompem a ação e aguardam a limpeza antes de liberar o campo.
 
 ## Ajuda e evidências
 
@@ -136,7 +173,7 @@ Para ajuda fora da sessão, use `lab --help`. O ambiente suportado é Python 3.1
 
 ## Desenvolvimento e validação
 
-Os comandos são interpretados igualmente no prompt clássico e na TUI. Aspas simples ou duplas agrupam argumentos; caminhos Windows mantêm as barras invertidas. `/project` fica reservado para uma etapa futura e ainda não executa ações.
+Os comandos são interpretados igualmente no prompt clássico e na TUI. Aspas simples ou duplas agrupam argumentos; caminhos Windows mantêm as barras invertidas. `/project` seleciona um workspace do assistente sem mudar o catálogo de missões.
 
 Instalação Linux a partir do checkout:
 
@@ -151,4 +188,4 @@ python3 -m venv .venv
 
 No Windows, use `.venv\Scripts\python.exe` e `.venv\Scripts\lab.exe`. `constraints/dev.txt` foi gerado no ambiente Linux Python 3.12, mantendo os limites declarados em `pyproject.toml`; as quatro células do workflow verificam instalação editável e suíte completa em Ubuntu/Windows com Python 3.11/3.12. Os testes incluem as 11 referências, jornadas reais 001/006, entrada/saída da TUI e cancelamento de árvores de processos. Ubuntu precisa de `cc` para a regressão nativa de threads. No Windows, o job também executa PowerShell e testa validação, falhas e idempotência do instalador, restaurando o PATH do usuário.
 
-A existência do workflow não confirma uma execução: os resultados de cada célula dependem do CI. Não é necessário instalar SDK de assistente para ajuda, versão, missões ou prática clássica.
+O workflow primeiro prova ajuda, versão e missão clássica sem extras; depois instala os extras opcionais de análise e SDK oficial sob as constraints e roda provas offline com mocks. A existência do workflow não confirma uma execução: os resultados de cada célula dependem do CI. Não é necessário instalar SDK de assistente para ajuda, versão, missões, prática clássica ou `check`.

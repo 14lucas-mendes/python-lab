@@ -1,4 +1,9 @@
 import argparse
+import asyncio
+from contextlib import redirect_stderr
+from io import StringIO
+import json
+from dataclasses import asdict
 from importlib import metadata
 import sqlite3
 import sys
@@ -10,6 +15,14 @@ from rich.markdown import Markdown
 from rich.panel import Panel
 from rich.table import Table
 
+from python_lab.assistant.commands import AssistantCommands
+from python_lab.assistant.errors import AssistantError, ContextError
+from python_lab.assistant.history import ConversationRepository
+from python_lab.assistant.openai_provider import OpenAIProvider
+from python_lab.assistant.settings import load_settings
+from python_lab.assistant.service import AssistantService
+from python_lab.analysis.service import AnalysisService
+from python_lab.workspace import Workspace
 from python_lab.app import ActiveMissionError, ApplicationError, PythonLabApp
 from python_lab.commands import ALIASES, COMMANDS, DEFAULT_SUMMARIES, CommandDispatcher, CommandResult, parse_command
 from python_lab.catalog import CatalogError, load_goal, load_missions, load_roadmap, load_skills
@@ -44,17 +57,49 @@ EVIDENCE_RESULT_LABELS = {
 }
 
 
+class AssistantRuntime:
+    """One lazy provider and output budget for one local process/session."""
+
+    def __init__(self, data_dir: Path, app: PythonLabApp | None = None):
+        self.data_dir = data_dir
+        self.app = app
+        self.provider = None
+        self.service = None
+
+    def get_service(self):
+        if self.service is None:
+            settings = load_settings(self.data_dir)
+            self.provider = OpenAIProvider(settings)
+            self.service = AssistantService(
+                self.provider, AnalysisService(),
+                ConversationRepository(self.data_dir / "lab.sqlite3"),
+                on_full_solution=self.app.record_full_solution if self.app else None,
+            )
+        return self.service
+
+    async def aclose(self):
+        if self.provider is not None:
+            await self.provider.aclose()
+
+
 class PythonLabCLI:
     def __init__(
         self,
         app: PythonLabApp,
         console: Console | None = None,
         session_log: SessionLog | None = None,
+        assistant_project: Path | None = None,
+        assistant_runtime: AssistantRuntime | None = None,
+        assistant_mode: str = "assistant",
     ) -> None:
         self.app = app
         self.console = encoding_safe_console(console or Console())
         self.session_log = session_log
         self._last_summary = ""
+        self.assistant_project = assistant_project.resolve() if assistant_project else None
+        self.assistant_mode = assistant_mode
+        self.assistant_runtime = assistant_runtime or AssistantRuntime(app.repository.path.parent, app)
+        self._runner = None
         self.handlers = {
             "/goal": self.show_goal,
             "/skills": self.show_skills,
@@ -93,6 +138,13 @@ class PythonLabCLI:
             self._record(command_line, str(exc))
             return True
         command = parsed.name
+        if command in {"/project", "/mode"}:
+            return self._local_assistant_setting(command, parsed.args)
+        if command in {"/explain-code", "/diagnose", "/check"}:
+            return self._execute_assistant(parsed)
+        if command == "/cancel":
+            self.console.print("Nenhuma ação em curso.")
+            return True
         self._last_summary = DEFAULT_SUMMARIES.get(command, f"{command} executado")
         display = " ".join((command, *parsed.args)).strip()
         try:
@@ -112,6 +164,53 @@ class PythonLabCLI:
             if command != "/status":
                 self._print_next_step()
         return not result.exit_requested
+
+    def _local_assistant_setting(self, command: str, args: tuple[str, ...]) -> bool:
+        if command == "/mode":
+            if len(args) != 1 or args[0] not in {"assistant", "tutor"}:
+                self.console.print("Uso: /mode assistant|tutor", markup=False)
+            else:
+                self.assistant_mode = args[0]
+                self.console.print(f"Modo: {self.assistant_mode}", markup=False)
+            return True
+        if len(args) != 1:
+            self.console.print("Uso: /project <diretório>|off", markup=False)
+            return True
+        if args[0] == "off":
+            self.assistant_project = None
+            self.console.print("Missões disponíveis.", markup=False)
+            return True
+        try:
+            self.assistant_project = Workspace(Path(args[0])).root
+        except ContextError as exc:
+            self.console.print(str(exc), markup=False)
+            return True
+        self.console.print(f"Projeto: {self.assistant_project}", markup=False)
+        return True
+
+    def _execute_assistant(self, parsed) -> bool:
+        try:
+            workspace = Workspace(self.assistant_project or Path.cwd())
+            handlers = AssistantCommands(None, workspace, self.assistant_mode,
+                app=self.app, service_factory=self.assistant_runtime.get_service)
+            if self._runner is None:
+                self._runner = asyncio.Runner()
+            handler = {"/check": handlers.check, "/explain-code": handlers.explain,
+                "/diagnose": handlers.diagnose}[parsed.name]
+            result = self._runner.run(handler(parsed.args))
+            self.console.print(result.message, markup=False)
+            self._record(parsed.name, result.message if result.ok else "Falha na assistência")
+        except (ContextError, AssistantError) as exc:
+            self.console.print(str(exc), markup=False)
+        except KeyboardInterrupt:
+            self.console.print("Ação cancelada.", markup=False)
+        return True
+
+    def close_assistant(self) -> None:
+        if self._runner is not None:
+            self._runner.run(self.assistant_runtime.aclose())
+            self._runner.close()
+            self._runner = None
 
     def _record(self, command: str, summary: str) -> None:
         if self.session_log is None:
@@ -403,6 +502,7 @@ class PythonLabCLI:
         return True
 
     def exit(self, _argument: str = "") -> bool:
+        self.close_assistant()
         try:
             self.app.persist()
         except ProgressError as exc:
@@ -511,14 +611,27 @@ def _argument_parser() -> argparse.ArgumentParser:
         help="Usar o prompt lab> em vez da TUI em tela cheia.",
     )
     parser.add_argument("--data-dir", type=Path, help="Diretório de dados do usuário")
-    parser.add_argument("command", nargs="?", choices=("migrate",))
+    parser.add_argument("--project", type=Path, help="Projeto do assistente; mantém o catálogo de missões separado")
+    parser.add_argument("--mode", choices=("assistant", "tutor"), default="assistant")
+    parser.add_argument("--level", type=int, choices=range(5), default=0)
+    parser.add_argument("--json", action="store_true", help="Resultado estruturado schema_version=1")
+    parser.add_argument("--traceback", type=Path)
+    parser.add_argument("--file", action="append", type=Path, default=[])
+    parser.add_argument("command", nargs="?", choices=("migrate", "explain", "diagnose", "check"))
+    parser.add_argument("files", nargs="*")
     parser.add_argument("--from-dir", type=Path, help="Diretório com JSON legado")
     return parser
 
 
-def _run_classic(app: PythonLabApp, session_log: SessionLog | None, console: Console) -> int:
-    cli = PythonLabCLI(app=app, console=console, session_log=session_log)
-    _banner(app, console)
+def _run_classic(app: PythonLabApp, session_log: SessionLog | None, console: Console,
+                 assistant_project: Path | None = None, assistant_mode: str = "assistant") -> int:
+    cli = PythonLabCLI(app=app, console=console, session_log=session_log,
+                       assistant_project=assistant_project, assistant_mode=assistant_mode)
+    if assistant_project is None:
+        _banner(app, console)
+    else:
+        console.print(f"Projeto: {assistant_project.resolve()} · modo {assistant_mode}", markup=False)
+        console.print("Use /explain-code, /diagnose ou /check; /project off volta às missões.", markup=False)
     try:
         while True:
             line = console.input("[bold]lab>[/bold] ")
@@ -529,12 +642,16 @@ def _run_classic(app: PythonLabApp, session_log: SessionLog | None, console: Con
         console.print("\nSessão encerrada. O último estado confirmado foi preservado.")
     except EOFError:
         cli.exit()
+    cli.close_assistant()
     return 0
 
 
-def _run_tui(app: PythonLabApp, session_log: SessionLog | None) -> int:
+def _run_tui(app: PythonLabApp, session_log: SessionLog | None, assistant_project: Path | None = None, assistant_mode: str = "assistant") -> int:
     try:
-        PythonLabTUI(lab=app, session_log=session_log).run()
+        if assistant_project is None and assistant_mode == "assistant":
+            PythonLabTUI(lab=app, session_log=session_log).run()
+        else:
+            PythonLabTUI(lab=app, session_log=session_log, assistant_project=assistant_project, assistant_mode=assistant_mode).run()
     finally:
         if session_log is not None and session_log.is_open:
             try:
@@ -545,13 +662,36 @@ def _run_tui(app: PythonLabApp, session_log: SessionLog | None) -> int:
 
 
 def main(argv: Sequence[str] | None = None) -> int:
-    args = _argument_parser().parse_args(argv)
+    raw = list(sys.argv[1:] if argv is None else argv)
+    external = next((item for item in raw if item in {"explain", "diagnose", "check"}), None)
+    if "--json" in raw and external is not None:
+        diagnostic = StringIO()
+        try:
+            with redirect_stderr(diagnostic):
+                args = _argument_parser().parse_intermixed_args(raw)
+        except SystemExit as exc:
+            if exc.code != 2:
+                raise
+            message = diagnostic.getvalue().strip().splitlines()[-1]
+            print(json.dumps({"schema_version": 1, "action": external, "ok": False,
+                              "message": message, "data": {"error_kind": "usage"}}, ensure_ascii=False))
+            return 2
+    else:
+        args = _argument_parser().parse_intermixed_args(raw)
+    if args.command in {"explain", "diagnose", "check"}:
+        return _run_external_assistant(args)
     console = encoding_safe_console(Console())
     if sys.version_info < (3, 11):
         console.print(
             "Python Lab requer Python 3.11 ou mais recente.", style="red", markup=False
         )
         return 2
+    if args.project is not None:
+        try:
+            Workspace(args.project)
+        except ContextError as exc:
+            console.print(str(exc), style="red", markup=False)
+            return 2
     session_log: SessionLog | None = None
     try:
         if args.command == "migrate":
@@ -575,5 +715,42 @@ def main(argv: Sequence[str] | None = None) -> int:
         console.print(str(exc), style="red", markup=False)
         return 1
     if args.classic:
-        return _run_classic(app, session_log, console)
-    return _run_tui(app, session_log)
+        return _run_classic(app, session_log, console, args.project, args.mode)
+    return _run_tui(app, session_log, args.project, args.mode)
+
+
+def _run_external_assistant(args) -> int:
+    """One-shot action; each invocation has a fresh in-memory token budget."""
+    action = args.command
+    runtime = None
+    try:
+        catalog = Path(__file__).resolve().parent.parent
+        data_dir = resolve_paths(catalog, args.data_dir).data_dir
+        workspace = Workspace(args.project or Path.cwd())
+        runtime = AssistantRuntime(data_dir)
+        handlers = AssistantCommands(None, workspace, args.mode, service_factory=runtime.get_service)
+        names = tuple(args.files) + tuple(str(path) for path in args.file)
+        if action == "check":
+            if args.traceback or args.level:
+                raise ValueError("check aceita apenas arquivos selecionados.")
+            coro = handlers.check(names)
+        else:
+            arguments = names + (('--level', str(args.level)) if args.level else ())
+            if args.traceback is not None:
+                arguments += ('--traceback', str(args.traceback))
+            coro = (handlers.explain if action == 'explain' else handlers.diagnose)(arguments)
+        async def run():
+            try:
+                return await coro
+            finally:
+                await runtime.aclose()
+        result = asyncio.run(run())
+    except (ValueError, ContextError, AssistantError) as exc:
+        result = CommandResult(False, str(exc), {"error_kind": "usage"})
+    code = 0 if result.ok else (2 if result.data.get("error_kind") == "usage" else 1)
+    if args.json:
+        print(json.dumps({"schema_version": 1, "action": action, "ok": result.ok,
+                          "message": result.message, "data": result.data}, ensure_ascii=False))
+    else:
+        encoding_safe_console(Console()).print(result.message, markup=False)
+    return code

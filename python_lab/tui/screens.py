@@ -25,6 +25,12 @@ Digite / para abrir a lista de comandos.
 /test details Saída completa sem nova tentativa
 /hint        Liberar a próxima pista
 /explain     Registrar a explicação e concluir
+/project <dir>  Abrir projeto do assistente; off retorna às missões
+/mode <assistant|tutor> Alternar modo
+/explain-code <arquivo> Explicar código
+/diagnose --traceback <arquivo> --file <fonte> Diagnosticar erro
+/check <arquivo> Verificação local
+/cancel      Cancelar ação em curso
 /help        Mostrar esta ajuda
 /exit        Salvar e encerrar
 

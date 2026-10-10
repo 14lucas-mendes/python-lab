@@ -1,7 +1,7 @@
 """Command contracts and registry, independent of terminal renderers."""
 from dataclasses import dataclass
 import shlex
-from typing import Callable
+from typing import Awaitable, Callable
 
 
 COMMANDS = (
@@ -20,6 +20,12 @@ COMMANDS = (
     ("/history", "/hi", "Exibir histórico de tentativas da missão atual"),
     ("/session", "/se", "Exibir o histórico desta sessão"),
     ("/evidence", "/ev", "Exibir evidências de competências"),
+    ("/project <diretório>", "", "Selecionar projeto do assistente (off retorna às missões)"),
+    ("/mode <assistant|tutor>", "", "Selecionar modo da assistência"),
+    ("/explain-code <arquivo>", "", "Explicar código selecionado"),
+    ("/diagnose --traceback <arquivo> --file <fonte>", "", "Diagnosticar erro"),
+    ("/check <arquivo>", "", "Verificar código localmente"),
+    ("/cancel", "", "Cancelar ação em curso"),
     ("/help", "/?", "Listar comandos disponíveis"),
     ("/exit", "/q", "Salvar e encerrar com segurança"),
 )
@@ -88,14 +94,28 @@ def parse_command(line: str) -> Command:
 class CommandDispatcher:
     def __init__(self) -> None:
         self._handlers: dict[str, Callable[[tuple[str, ...]], CommandResult]] = {}
+        self._async_handlers: dict[str, Callable[[tuple[str, ...]], Awaitable[CommandResult]]] = {}
 
     def register(self, name: str, handler: Callable[[tuple[str, ...]], CommandResult]) -> None:
         canonical = ALIASES.get(name.lower(), name.lower())
         self._handlers[canonical] = handler
 
+    def register_async(self, name: str, handler: Callable[[tuple[str, ...]], Awaitable[CommandResult]]) -> None:
+        canonical = ALIASES.get(name.lower(), name.lower())
+        self._async_handlers[canonical] = handler
+
+    async def dispatch_async(self, command: Command) -> CommandResult:
+        name = ALIASES.get(command.name.lower(), command.name.lower())
+        handler = self._async_handlers.get(name)
+        if handler is not None:
+            return await handler(command.args)
+        return self.dispatch(command)
+
     def dispatch(self, command: Command) -> CommandResult:
         name = ALIASES.get(command.name.lower(), command.name.lower())
         handler = self._handlers.get(name)
+        if handler is None and name in self._async_handlers:
+            return CommandResult(False, f"{name} requer execução async; use dispatch_async.", {})
         if handler is None:
             suggested = f"/{name}"
             message = "Comando desconhecido. Digite /help para a lista."
