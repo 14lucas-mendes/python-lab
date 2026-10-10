@@ -149,7 +149,50 @@ python -m pip install -c constraints/dev.txt -c constraints/assistant.txt -e '.[
 export LAB_API_KEY='sua chave'  # configure no ambiente seguro; nunca no TOML
 ```
 
-No PowerShell, configure `LAB_API_KEY` como variável de ambiente do processo antes de iniciar `lab`. Nenhum modelo é escolhido automaticamente e a chave nunca entra no TOML. As respostas dependem de rede e consomem tokens; o limite configurado cobre tokens de **saída** por sessão, não custo total. Não há repetição automática após erro. Cada seleção é explícita e limitada a 20 arquivos, 32768 bytes por arquivo e 131072 bytes no total. Código, traceback e respostas são exibidos como texto literal; a assistência não altera arquivos do projeto nem registra conclusões de missão. Na TUI, `/cancel`, o botão Cancelar ou Ctrl+C interrompem a ação e aguardam a limpeza antes de liberar o campo. Ctrl+C durante `/test` aguarda a limpeza do processo de testes antes de sair. No prompt clássico, `/cancel` pode ser digitado enquanto a análise ou a resposta está em curso; o próximo comando só é aceito após a limpeza.
+No PowerShell, configure `LAB_API_KEY` como variável de ambiente do processo antes de iniciar `lab`. Nenhum modelo é escolhido automaticamente e a chave nunca entra no TOML. As respostas dependem de rede e consomem tokens; o limite configurado cobre tokens de **saída** por sessão, não custo total. Não há repetição automática após erro. Cada seleção é explícita e limitada a 20 arquivos, 32768 bytes por arquivo e 131072 bytes no total. Código, traceback e respostas são exibidos como texto literal; explicação, diagnóstico e revisão preservam os arquivos do projeto. Somente a aplicação confirmada de uma proposta altera um arquivo, sem concluir missão. Na TUI, `/cancel`, o botão Cancelar ou Ctrl+C interrompem a ação e aguardam a limpeza antes de liberar o campo. Ctrl+C durante `/test` aguarda a limpeza do processo de testes antes de sair. No prompt clássico, `/cancel` pode ser digitado enquanto a análise ou a resposta está em curso; o próximo comando só é aceito após a limpeza.
+
+## Revisão, aplicação e verificação
+
+```bash
+lab review arquivo.py --project /caminho/do/projeto
+lab apply ID --project /caminho/do/projeto
+lab apply ID --yes --project /caminho/do/projeto
+lab verify ID --check ast --check ruff --project /caminho/do/projeto
+lab verify ID --check pytest --project /caminho/do/projeto
+lab new cli meu-app --path /diretorio/pai
+lab new fastapi minha-api --path /diretorio/pai
+```
+
+Na TUI e no prompt clássico, use `/review`, `/apply`, `/verify` e `/new` com
+os mesmos argumentos. A revisão funciona sem IA: mostra a análise local e informa
+que a IA está indisponível, sem inventar sugestões. Com o assistente configurado,
+mostra propostas com ID local, destino resolvido e diff literal. Cada proposta
+altera apenas um arquivo selecionado. A CLI exige `--yes`; sem essa opção exibe
+o diff e preserva os bytes. A TUI sempre abre uma confirmação com destino e diff;
+Cancelar ou Esc preservam o arquivo. Uma edição posterior à revisão exige nova
+proposta. IDs pertencem ao workspace original; mantenha `--project` e `--data-dir`
+entre as invocações.
+
+Review e apply deixam a proposta **não verificada**. `verify` só executa os
+checks explicitamente selecionados (`ast`, `ruff`, `pytest`); sem `--check`, retorna
+não verificada. **`--check pytest` autoriza descoberta e execução dos testes e
+conftest do projeto no diretório raiz resolvido exibido, com seus privilégios.**
+Revisão, aplicação e checks padrão não executam pytest. Os resultados distinguem
+falhas de assertions, infraestrutura indisponível, timeout e cancelamento nos
+detalhes dos checks. A aprovação corresponde ao hash aplicado e às fontes
+selecionadas daquele snapshot; novas edições invalidam esse resultado.
+
+Aplicar a solução editável da missão ativa registra ajuda completa, sem produzir
+evidência de teste ou concluir missão. Continue com `/test` e `/explain` para as
+evidências da missão. Comandos externos aceitam `--json` (schema_version 1):
+código 0 para resultado/findings, 2 para uso/configuração inválidos e 1 para falha
+de execução. `--help` e `--version` dispensam configuração e SDK.
+
+`new` usa apenas templates do registro curado, cria um destino inexistente e
+imprime os arquivos e próximos comandos. Não instala dependências nem executa
+código. Siga as instruções do README gerado para preparar o ambiente e iniciar
+a CLI ou o FastAPI. A sessão compartilha um provider e orçamento opcionais entre
+explicação, diagnóstico e revisão.
 
 ## Ajuda e evidências
 

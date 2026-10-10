@@ -1,16 +1,24 @@
-"""Shared CLI and TUI handlers for explicit, read-only assistant actions."""
+"""Shared CLI and TUI handlers for explicit assistant and project actions."""
 
 import asyncio
 from dataclasses import asdict
 from pathlib import Path
 import threading
-from collections.abc import Callable
+from collections.abc import Awaitable, Callable
+import hashlib
 
-from python_lab.analysis import AnalysisCancelled, AnalysisError, AnalysisService
+from python_lab.analysis import AnalysisError, AnalysisService
 from python_lab.app import PythonLabApp
 from python_lab.assistant.errors import AssistantError, ContextError
 from python_lab.assistant.models import AssistantMode, AssistantRequest
 from python_lab.assistant.service import AssistantService
+from python_lab.assistant.patches import PatchService
+from python_lab.assistant.review import ReviewService
+from python_lab.assistant.verification import VerificationService
+from python_lab.scaffolding.service import ScaffoldService
+from python_lab.scaffolding import registry
+from python_lab.app import ApplicationError
+from python_lab.progress import ProgressError
 from python_lab.commands import CommandResult
 from python_lab.runtime.processes import ProcessCleanupError
 from python_lab.workspace import Workspace
@@ -20,13 +28,181 @@ class AssistantCommands:
     def __init__(self, service: AssistantService | None, workspace: Workspace,
                  mode: AssistantMode, *, app: PythonLabApp | None = None,
                  analysis: AnalysisService | None = None,
-                 service_factory: Callable[[], AssistantService] | None = None):
+                 service_factory: Callable[[], AssistantService] | None = None,
+                 patches: PatchService | None = None,
+                 verification: VerificationService | None = None,
+                 review_factory: Callable[[], ReviewService] | None = None):
         self.service = service
         self.workspace = workspace
         self.mode = mode
         self.app = app
         self.analysis = analysis or AnalysisService()
         self.service_factory = service_factory
+        self.patches = patches
+        self.verification = verification
+        self.review_factory = review_factory
+
+
+    def register(self, dispatcher):
+        for name, handler in self.actions().items():
+            dispatcher.register_async(name, handler)
+
+    def actions(self):
+        return {"/check": self.check, "/explain-code": self.explain,
+                "/diagnose": self.diagnose, "/review": self.review,
+                "/apply": self.apply, "/verify": self.verify, "/new": self.new}
+
+    async def _blocking(self, function, cancel):
+        if cancel.is_set():
+            raise asyncio.CancelledError()
+        worker = asyncio.create_task(asyncio.to_thread(function))
+        try:
+            return await asyncio.shield(worker)
+        except asyncio.CancelledError:
+            cancel.set()
+            while not worker.done():
+                try:
+                    await asyncio.shield(worker)
+                except asyncio.CancelledError:
+                    continue
+                except Exception:
+                    break
+            try:
+                worker.result()
+            except ProcessCleanupError:
+                raise
+            except Exception:
+                pass
+            raise
+
+    @staticmethod
+    def _error(exc, kind="usage"):
+        return CommandResult(False, str(exc), {"error_kind": kind})
+
+    async def review(self, args, *, cancel=None):
+        action_cancel = cancel or threading.Event()
+        try:
+            snapshot = await self._blocking(
+                lambda: self.workspace.snapshot(self._selection(args)), action_cancel)
+            mission_id = self.app.progress.current_mission_id if self.app else None
+            request = AssistantRequest("review", "Revise o código e proponha correções com diff.",
+                                       self.mode, 3, snapshot, mission_id=mission_id)
+            if self.review_factory is None:
+                raise AssistantError("Serviço de revisão indisponível.")
+            result = await self.review_factory().review(request, cancel=action_cancel)
+            data = asdict(result)
+            previews = []
+            lines = ["Revisão local concluída; sugestões não são verificação executada."]
+            for check in result.analysis.checks:
+                lines.append(f"{check.tool}: {check.status}")
+                lines.extend(f"  {issue.path}: {issue.message}" for issue in check.issues)
+            if result.advice is None:
+                lines.append("IA indisponível: configure provider, model, LAB_API_KEY e o extra assistant.")
+            else:
+                lines.extend((result.advice.summary, result.advice.explanation))
+            for patch in result.proposals:
+                diff = await self._blocking(lambda: self.patches.preview(patch), action_cancel)
+                destination = str(self.workspace.root / patch.change.path)
+                previews.append({"id": patch.id, "path": destination, "diff": diff,
+                                 "reason": patch.reason, "status": "unverified"})
+                lines.append(f"Proposta {patch.id} · {destination}\n{diff}\nPróximo: /apply {patch.id}")
+            data["proposals"] = previews
+            return CommandResult(True, "\n".join(lines), data)
+        except (ValueError, ContextError) as exc:
+            return self._error(exc)
+        except (AssistantError, AnalysisError, ProcessCleanupError) as exc:
+            return self._error(exc, "execution")
+
+    async def apply(self, args, *, cancel=None,
+                    confirm: Callable[[CommandResult], Awaitable[bool]] | None = None):
+        action_cancel = cancel or threading.Event()
+        try:
+            if len(args) not in (1, 2) or (len(args) == 2 and args[1] != "--yes"):
+                raise ValueError("Uso: /apply ID [--yes].")
+            if self.patches is None:
+                raise AssistantError("Serviço de propostas indisponível.")
+            patch = await self._blocking(lambda: self.patches.load(args[0]), action_cancel)
+            diff = await self._blocking(lambda: self.patches.preview(patch), action_cancel)
+            destination = self.workspace.root / patch.change.path
+            mission_id = self.app.progress.current_mission_id if self.app else None
+            if mission_id and self.app.mission_by_id(mission_id).solution_path.resolve() != destination.resolve():
+                mission_id = None
+            workspace_id = hashlib.sha256(str(self.workspace.root).encode("utf-8")).hexdigest()
+            event_key = f"apply:{workspace_id}:{patch.id}:{patch.change.before_sha256}"
+            data = {"id": patch.id, "path": str(destination), "diff": diff,
+                    "status": "unverified", "event_key": event_key}
+            preview = CommandResult(False, f"Destino: {destination}\n{diff}\nConfirme com --yes: lab apply {patch.id} --yes.",
+                                    {**data, "error_kind": "usage"})
+            # A TUI always asks, even when its input includes --yes.
+            confirmed = await confirm(preview) if confirm else len(args) == 2
+            if not confirmed:
+                return preview
+            def write():
+                if action_cancel.is_set():
+                    raise asyncio.CancelledError()
+                applied = self.patches.apply(patch, confirmed=True)
+                if mission_id is not None:
+                    self.app.record_full_solution(mission_id)
+                return applied
+            try:
+                await self._blocking(write, action_cancel)
+            except (ApplicationError, ProgressError) as exc:
+                return CommandResult(False, f"Arquivo aplicado; falha ao registrar ajuda: {exc}",
+                                     {**data, "error_kind": "execution", "applied": True})
+            return CommandResult(True, f"Destino: {destination}\n{diff}\nAplicado; não verificado. Próximo: /verify {patch.id} --check ast.", data)
+        except (ValueError, AssistantError, ContextError) as exc:
+            return self._error(exc)
+        except ProcessCleanupError as exc:
+            return self._error(exc, "execution")
+
+    async def verify(self, args, *, cancel=None):
+        action_cancel = cancel or threading.Event()
+        try:
+            if not args or (len(args) - 1) % 2 or any(
+                args[i] != "--check" for i in range(1, len(args), 2)
+            ):
+                raise ValueError("Uso: /verify ID [--check ast|ruff|pytest] (repetível).")
+            checks = tuple(args[i] for i in range(2, len(args), 2))
+            if any(name not in {"ast", "ruff", "pytest"} for name in checks) or len(set(checks)) != len(checks):
+                raise ValueError("Checks permitidos sem repetição: ast, ruff, pytest.")
+            if self.patches is None or self.verification is None:
+                raise AssistantError("Serviço de verificação indisponível.")
+            patch = await self._blocking(lambda: self.patches.load(args[0]), action_cancel)
+            result = await self._blocking(lambda: self.verification.run(
+                patch, self.workspace, checks=checks, cancel=action_cancel), action_cancel)
+            data = {**asdict(result), "id": patch.id, "root": str(self.workspace.root)}
+            lines = [f"Projeto: {self.workspace.root}", f"Verificação: {result.status}"]
+            lines.extend(f"{item.name}: {item.status} · {item.detail}" for item in result.checks)
+            if result.status == "unverified":
+                lines.append("Selecione checks explicitamente; --check pytest executa testes/conftest neste projeto com seus privilégios.")
+            ok = result.status in {"passed", "unverified"}
+            if not ok:
+                data["error_kind"] = "execution"
+            return CommandResult(ok, "\n".join(lines), data)
+        except (ValueError, AssistantError, ContextError) as exc:
+            return self._error(exc)
+        except ProcessCleanupError as exc:
+            return self._error(exc, "execution")
+
+    async def new(self, args, *, cancel=None):
+        action_cancel = cancel or threading.Event()
+        try:
+            if len(args) != 4 or args[2] != "--path":
+                raise ValueError(f"Uso: /new {'|'.join(registry.TEMPLATES)} NAME --path PARENT.")
+            template, name, _, parent = args
+            if not name or Path(name).name != name or "/" in name or "\\" in name:
+                raise ValueError("Nome deve ser apenas o nome do novo projeto.")
+            target = Path(parent).expanduser().resolve() / name
+            result = await self._blocking(lambda: ScaffoldService().create(template, target), action_cancel)
+            data = {"target": str(result.target), "files": [str(path) for path in result.files],
+                    "template": result.template}
+            lines = [f"Projeto criado: {result.target}", *data["files"],
+                     f'Próximo: cd "{result.target}"', "python -m venv .venv",
+                     "Ative o ambiente e execute: python -m pip install -e '.[dev]'",
+                     "python -m pytest"]
+            return CommandResult(True, "\n".join(lines), data)
+        except (ValueError, AssistantError, ContextError) as exc:
+            return self._error(exc)
 
     def _service(self) -> AssistantService:
         if self.service is None and self.service_factory is not None:

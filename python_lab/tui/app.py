@@ -9,7 +9,7 @@ from threading import Event
 from rich.console import Console
 from rich.text import Text
 
-from textual.app import App, ComposeResult
+from textual.app import App, ComposeResult, ScreenStackError
 from textual.binding import Binding
 from textual.containers import Horizontal, Vertical, VerticalScroll
 from textual.css.query import NoMatches
@@ -17,7 +17,6 @@ from textual.widgets import Button, Input, Label, Markdown, Static
 from textual.worker import Worker, WorkerCancelled, WorkerFailed, get_current_worker
 
 from python_lab.app import ApplicationError, PythonLabApp
-from python_lab.assistant.commands import AssistantCommands
 from python_lab.assistant.errors import ContextError
 from python_lab.assistant.service import AssistantService
 from python_lab.workspace import Workspace
@@ -148,25 +147,25 @@ class PythonLabTUI(App[None]):
     def _palette(self) -> CommandPalette | None:
         try:
             return self._shell().query_one("#palette", CommandPalette)
-        except NoMatches:
+        except (NoMatches, ScreenStackError):
             return None
 
     def _composer(self) -> Composer | None:
         try:
             return self._shell().query_one("#composer", Composer)
-        except NoMatches:
+        except (NoMatches, ScreenStackError):
             return None
 
     def _cancel_button(self) -> Button | None:
         try:
             return self._shell().query_one("#assistant-cancel", Button)
-        except NoMatches:
+        except (NoMatches, ScreenStackError):
             return None
 
     def _next_step_bar(self) -> NextStepBar | None:
         try:
             return self._shell().query_one("#next-step", NextStepBar)
-        except NoMatches:
+        except (NoMatches, ScreenStackError):
             return None
 
     def action_quit_lab(self) -> None:
@@ -299,7 +298,7 @@ class PythonLabTUI(App[None]):
             self._flush_console()
             self._refresh_status()
             return
-        if command in {"/explain-code", "/diagnose", "/check"}:
+        if command in {"/explain-code", "/diagnose", "/check", "/review", "/apply", "/verify", "/new"}:
             self._start_assistant(command, parse_command(stripped).args)
             return
         if command in {"/mission", "/concepts"}:
@@ -340,14 +339,11 @@ class PythonLabTUI(App[None]):
 
     def _start_assistant(self, command: str, args: tuple[str, ...]) -> None:
         try:
-            workspace = Workspace(self.assistant_project or Path.cwd())
+            handlers = self.cli.assistant_handlers(service=self.assistant_service)
         except ContextError as exc:
             self._append_response(str(exc))
             return
-        handlers = AssistantCommands(self.assistant_service, workspace, self.cli.effective_assistant_mode(),
-            app=self.lab, service_factory=self.cli.assistant_runtime.get_service)
-        action = {"/explain-code": handlers.explain, "/diagnose": handlers.diagnose,
-                  "/check": handlers.check}[command]
+        action = handlers.actions()[command]
         cancel = self._assistant_cancel = Event()
         composer = self._composer()
         if composer is not None:
@@ -360,7 +356,22 @@ class PythonLabTUI(App[None]):
         async def run():
             result = None
             try:
-                result = await action(args, cancel=cancel)
+                if command == "/apply":
+                    async def confirm(preview):
+                        decision = asyncio.get_running_loop().create_future()
+                        modal = ConfirmScreen("Aplicar esta proposta?", diff=preview.message)
+                        def chosen(value):
+                            if not decision.done():
+                                decision.set_result(bool(value))
+                        self.push_screen(modal, chosen)
+                        try:
+                            return await decision
+                        finally:
+                            if self.screen_stack and self.screen is modal:
+                                modal.dismiss(False)
+                    result = await handlers.apply(args, cancel=cancel, confirm=confirm)
+                else:
+                    result = await action(args, cancel=cancel)
             except asyncio.CancelledError:
                 # AssistantService and local analysis return only after cleanup.
                 pass
@@ -373,7 +384,7 @@ class PythonLabTUI(App[None]):
                     button = self._cancel_button()
                     if button is not None:
                         button.display = False
-                    if result is not None and not cancel.is_set():
+                    if result is not None and (not cancel.is_set() or result.data.get("error_kind") == "execution"):
                         self._append_response(result.message)
                         if result.ok:
                             self._record(command, "Assistência concluída")
@@ -693,7 +704,7 @@ class PythonLabTUI(App[None]):
                 actions += [f"/mission {mission.id}", f"/start {mission.id}"]
         shell.query_one("#stages", Static).update(stages)
         if self.assistant_project is not None:
-            actions += ["/explain-code", "/diagnose", "/check", "/mode", "/project off"]
+            actions += ["/explain-code", "/diagnose", "/check", "/review", "/apply", "/verify", "/new", "/mode", "/project off"]
         else:
             actions += ["/project"]
         shell.query_one("#actions", Static).update("Ações: " + "  ".join(actions) + "  · / para todos")

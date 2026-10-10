@@ -3,7 +3,6 @@ import asyncio
 from contextlib import redirect_stderr
 from io import StringIO
 import json
-from dataclasses import asdict
 from importlib import metadata
 import sqlite3
 import sys
@@ -22,10 +21,14 @@ from python_lab.assistant.history import ConversationRepository
 from python_lab.assistant.openai_provider import OpenAIProvider
 from python_lab.assistant.settings import load_settings
 from python_lab.assistant.service import AssistantService
+from python_lab.assistant.review import ReviewService
+from python_lab.assistant.patches import PatchService
+from python_lab.assistant.verification import VerificationService, VerificationStore
+from python_lab.runtime.processes import ProcessRunner
 from python_lab.analysis.service import AnalysisService
 from python_lab.workspace import Workspace
 from python_lab.app import ActiveMissionError, ApplicationError, PythonLabApp
-from python_lab.commands import ALIASES, COMMANDS, DEFAULT_SUMMARIES, CommandDispatcher, CommandResult, parse_command
+from python_lab.commands import COMMANDS, DEFAULT_SUMMARIES, CommandDispatcher, CommandResult, parse_command
 from python_lab.catalog import CatalogError, load_goal, load_missions, load_roadmap, load_skills
 from python_lab.learning import CompletionError, HintError, LearningError
 from python_lab.progress import ProgressError, ProgressRepository
@@ -36,6 +39,10 @@ from python_lab.storage.database import connection, has_user_state
 from python_lab.storage.migration import migrate_json_state
 from python_lab.storage.paths import resolve_paths
 from python_lab.tui.app import PythonLabTUI
+
+
+ASSISTANT_ACTIONS = {"/check", "/explain-code", "/diagnose", "/review", "/apply", "/verify", "/new"}
+EXTERNAL_ACTIONS = {"explain", "diagnose", "check", "review", "apply", "verify", "new"}
 
 
 SKILL_LABELS = {
@@ -78,9 +85,29 @@ class AssistantRuntime:
             )
         return self.service
 
+    def commands(self, workspace, mode, *, app=None, service=None):
+        return _assistant_commands(workspace, mode, self.data_dir, self.get_service,
+                                   app=app, service=service)
+
     async def aclose(self):
         if self.provider is not None:
             await self.provider.aclose()
+
+
+def _assistant_commands(workspace, mode, data_dir, service_factory, *, app=None, service=None):
+    """Adapt the existing get_service/aclose runtime contract without new requirements."""
+    patches = PatchService(workspace, data_dir)
+    def review_service():
+        try:
+            assistant = service or service_factory()
+        except AssistantError:
+            assistant = None
+        return ReviewService(AnalysisService(), assistant.provider if assistant else None,
+                             patches, ConversationRepository(data_dir / "lab.sqlite3"))
+    return AssistantCommands(service, workspace, mode, app=app,
+        service_factory=service_factory, patches=patches,
+        verification=VerificationService(ProcessRunner(), store=VerificationStore(data_dir)),
+        review_factory=review_service)
 
 
 class PythonLabCLI:
@@ -127,6 +154,17 @@ class PythonLabCLI:
         self.dispatcher = CommandDispatcher()
         for name, handler in self.handlers.items():
             self.dispatcher.register(name, self._adapt_handler(handler))
+        for name in ASSISTANT_ACTIONS:
+            async def action(args, name=name):
+                return await self.assistant_handlers().actions()[name](args)
+            self.dispatcher.register_async(name, action)
+
+    def assistant_handlers(self, *, service=None):
+        data_dir = getattr(self.assistant_runtime, "data_dir", self.app.repository.path.parent)
+        return _assistant_commands(Workspace(self.assistant_project or Path.cwd()),
+                                   self.effective_assistant_mode(), data_dir,
+                                   self.assistant_runtime.get_service, app=self.app, service=service)
+
 
     def _adapt_handler(self, handler):
         def invoke(args: tuple[str, ...]) -> CommandResult:
@@ -146,7 +184,7 @@ class PythonLabCLI:
         command = parsed.name
         if command in {"/project", "/mode"}:
             return self._local_assistant_setting(command, parsed.args)
-        if command in {"/explain-code", "/diagnose", "/check"}:
+        if command in ASSISTANT_ACTIONS:
             return self._execute_assistant(parsed)
         if command == "/cancel":
             self.cancel_classic_action()
@@ -202,13 +240,10 @@ class PythonLabCLI:
 
     def _execute_assistant(self, parsed) -> bool:
         try:
-            workspace = Workspace(self.assistant_project or Path.cwd())
-            handlers = AssistantCommands(None, workspace, self.effective_assistant_mode(),
-                app=self.app, service_factory=self.assistant_runtime.get_service)
+            handlers = self.assistant_handlers()
             if self._runner is None:
                 self._runner = asyncio.Runner()
-            handler = {"/check": handlers.check, "/explain-code": handlers.explain,
-                "/diagnose": handlers.diagnose}[parsed.name]
+            handler = handlers.actions()[parsed.name]
             result = self._runner.run(handler(parsed.args))
             self.console.print(result.message, markup=False)
             self._record(parsed.name, result.message if result.ok else "Falha na assistência")
@@ -244,11 +279,8 @@ class PythonLabCLI:
             self.console.print("Ação em curso; use /cancel.", markup=False)
             return
         self._ensure_classic_loop()
-        workspace = Workspace(self.assistant_project or Path.cwd())
-        handlers = AssistantCommands(None, workspace, self.effective_assistant_mode(),
-            app=self.app, service_factory=self.assistant_runtime.get_service)
-        action = {"/check": handlers.check, "/explain-code": handlers.explain,
-                  "/diagnose": handlers.diagnose}[parsed.name]
+        handlers = self.assistant_handlers()
+        action = handlers.actions()[parsed.name]
         cancel = threading.Event()
         done = threading.Event()
         scheduled = threading.Event()
@@ -706,7 +738,10 @@ def _argument_parser() -> argparse.ArgumentParser:
     parser.add_argument("--json", action="store_true", help="Resultado estruturado schema_version=1")
     parser.add_argument("--traceback", type=Path)
     parser.add_argument("--file", action="append", type=Path, default=[])
-    parser.add_argument("command", nargs="?", choices=("migrate", "explain", "diagnose", "check"))
+    parser.add_argument("--yes", action="store_true", help="Confirmar aplicação do diff")
+    parser.add_argument("--check", action="append", choices=("ast", "ruff", "pytest"), default=[])
+    parser.add_argument("--path", type=Path, help="Diretório pai para novo projeto")
+    parser.add_argument("command", nargs="?", choices=("migrate", *sorted(EXTERNAL_ACTIONS)))
     parser.add_argument("files", nargs="*")
     parser.add_argument("--from-dir", type=Path, help="Diretório com JSON legado")
     return parser
@@ -741,7 +776,7 @@ def _run_classic(app: PythonLabApp, session_log: SessionLog | None, console: Con
                 else:
                     console.print("Ação em curso; use /cancel.", markup=False)
                 continue
-            if parsed.name in {"/check", "/explain-code", "/diagnose"}:
+            if parsed.name in ASSISTANT_ACTIONS:
                 try:
                     cli.start_classic_assistant(parsed)
                 except (ContextError, AssistantError) as exc:
@@ -778,7 +813,7 @@ def _run_tui(app: PythonLabApp, session_log: SessionLog | None, assistant_projec
 
 def main(argv: Sequence[str] | None = None) -> int:
     raw = list(sys.argv[1:] if argv is None else argv)
-    external = next((item for item in raw if item in {"explain", "diagnose", "check"}), None)
+    external = next((item for item in raw if item in EXTERNAL_ACTIONS), None)
     if "--json" in raw and external is not None:
         diagnostic = StringIO()
         try:
@@ -793,7 +828,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             return 2
     else:
         args = _argument_parser().parse_intermixed_args(raw)
-    if args.command in {"explain", "diagnose", "check"}:
+    if args.command in EXTERNAL_ACTIONS:
         return _run_external_assistant(args)
     console = encoding_safe_console(Console())
     if sys.version_info < (3, 11):
@@ -844,9 +879,22 @@ def _run_external_assistant(args) -> int:
         data_dir = resolve_paths(catalog, args.data_dir).data_dir
         workspace = Workspace(args.project or Path.cwd())
         runtime = AssistantRuntime(data_dir)
-        handlers = AssistantCommands(None, workspace, args.mode, service_factory=runtime.get_service)
+        handlers = runtime.commands(workspace, args.mode)
         names = tuple(args.files) + tuple(str(path) for path in args.file)
-        if action == "check":
+        if action in {"review", "apply", "verify", "new"}:
+            if args.traceback or args.level or args.file:
+                raise ValueError(f"{action} não aceita --traceback, --level ou --file.")
+            if args.yes and action != "apply" or args.check and action != "verify" or args.path and action != "new":
+                raise ValueError("Opção incompatível com a ação selecionada.")
+            arguments = names
+            if action == "apply" and args.yes:
+                arguments += ("--yes",)
+            elif action == "verify":
+                arguments += tuple(token for check in args.check for token in ("--check", check))
+            elif action == "new" and args.path is not None:
+                arguments += ("--path", str(args.path))
+            coro = handlers.actions()[f"/{action}"](arguments)
+        elif action == "check":
             if args.traceback or args.level:
                 raise ValueError("check aceita apenas arquivos selecionados.")
             coro = handlers.check(names)

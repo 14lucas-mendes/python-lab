@@ -1,3 +1,4 @@
+from rich.text import Text
 from textual.app import ComposeResult
 from textual.binding import Binding
 from textual.containers import Horizontal, Vertical, VerticalScroll
@@ -30,6 +31,10 @@ Digite / para abrir a lista de comandos.
 /explain-code <arquivo> Explicar código
 /diagnose --traceback <arquivo> --file <fonte> Diagnosticar erro
 /check <arquivo> Verificação local
+/review <arquivo> Revisão local e propostas opcionais
+/apply <id>  Confirmar diff e aplicar
+/verify <id> --check ast|ruff|pytest Verificação explícita
+/new <template> <nome> --path <pai> Criar projeto
 /cancel      Cancelar ação em curso
 /help        Mostrar esta ajuda
 /exit        Salvar e encerrar
@@ -136,13 +141,17 @@ class ConfirmScreen(ModalScreen[bool]):
         Binding("escape", "cancel", "Cancelar", show=False),
     ]
 
-    def __init__(self, message: str) -> None:
+    def __init__(self, message: str, *, diff: str | None = None) -> None:
         super().__init__()
         self._message = message
+        self._diff = diff
 
     def compose(self) -> ComposeResult:
         with Vertical(id="confirm-dialog"):
-            yield Label(self._message, id="confirm-message")
+            yield Label(self._message, id="confirm-message", markup=False)
+            if self._diff is not None:
+                with VerticalScroll(id="patch-scroll"):
+                    yield Static(Text(self._diff), id="patch-diff", markup=False)
             with Horizontal(id="dialog-buttons"):
                 yield Button("Confirmar", variant="error", id="confirm-yes")
                 yield Button("Cancelar", id="confirm-no")

@@ -65,7 +65,7 @@ jobs:
       - name: Base assistant and classic checks without optional extras
         shell: bash
         run: |
-          "$PYTHON" -m pytest -q tests/test_assistant_cli.py tests/test_assistant_tui.py tests/test_assistant_journey.py tests/test_cli_entrypoint.py::test_classic_without_assistant_extra
+          "$PYTHON" -m pytest -q tests/test_assistant_cli.py tests/test_assistant_tui.py tests/test_assistant_journey.py tests/test_review_cli.py tests/test_review_tui.py tests/test_scaffolding_cli.py tests/test_cli_entrypoint.py::test_classic_without_assistant_extra
       - name: Install optional local analysis with tested constraints
         shell: bash
         run: |
@@ -79,7 +79,7 @@ jobs:
       - name: Offline official SDK and analysis adapter proofs
         shell: bash
         run: |
-          "$PYTHON" -m pytest -q tests/test_analysis.py tests/test_assistant_provider.py tests/test_assistant_cli.py tests/test_assistant_tui.py tests/test_assistant_journey.py
+          "$PYTHON" -m pytest -q tests/test_analysis.py tests/test_assistant_provider.py tests/test_assistant_cli.py tests/test_assistant_tui.py tests/test_assistant_journey.py tests/test_review_cli.py tests/test_review_tui.py tests/test_scaffolding_cli.py
       - name: Native PowerShell installer validation
         if: runner.os == 'Windows'
         shell: pwsh
