@@ -203,6 +203,15 @@ class PythonLabApp:
         self.persist()
         return hint
 
+    def record_full_solution(self, mission_id: str) -> None:
+        """Record explicit level-four help on its captured mission identity."""
+        self.mission_by_id(mission_id)
+        progress = self.progress.missions.get(mission_id)
+        if progress is None or progress.status != "started":
+            raise ApplicationError(f"Missão não iniciada para registrar ajuda: {mission_id}")
+        progress.reference_viewed = True
+        self.persist()
+
     def tests_are_current(self) -> bool:
         progress = self.current_progress()
         if not progress.tests_passed or not progress.tested_solution_path:

@@ -1,0 +1,51 @@
+"""Metadata-only, workspace-bound assistant conversation history."""
+
+from dataclasses import asdict
+from datetime import datetime, timezone
+import hashlib
+import json
+from pathlib import Path
+import sqlite3
+from uuid import uuid4
+
+from python_lab.assistant.errors import AssistantError
+from python_lab.assistant.models import AssistantAnswer, AssistantRequest
+from python_lab.storage.database import connection
+
+
+class ConversationRepository:
+    def __init__(self, database_path: Path):
+        self.database_path = Path(database_path)
+
+    def append(self, request: AssistantRequest, answer: AssistantAnswer, *, request_id: str | None = None) -> str:
+        identity = request_id if request_id is not None else uuid4().hex
+        if not isinstance(identity, str) or not identity:
+            raise AssistantError("ID local da requisição inválido.")
+        sources = json.dumps(
+            [{"path": source.path, "sha256": source.sha256} for source in request.snapshot.sources],
+            ensure_ascii=False,
+        )
+        response = json.dumps(asdict(answer), ensure_ascii=False)
+        try:
+            with connection(self.database_path) as db:
+                db.execute("""CREATE TABLE IF NOT EXISTS conversations (
+                    request_id TEXT PRIMARY KEY, workspace TEXT NOT NULL, created_at TEXT NOT NULL,
+                    action TEXT NOT NULL, mode TEXT NOT NULL, level INTEGER NOT NULL,
+                    mission_id TEXT, sources TEXT NOT NULL, prompt_sha256 TEXT NOT NULL,
+                    traceback_sha256 TEXT, answer TEXT NOT NULL,
+                    input_tokens INTEGER NOT NULL, output_tokens INTEGER NOT NULL
+                )""")
+                db.execute("""INSERT OR IGNORE INTO conversations
+                    (request_id, workspace, created_at, action, mode, level, mission_id,
+                     sources, prompt_sha256, traceback_sha256, answer, input_tokens, output_tokens)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""", (
+                    identity, str(request.snapshot.root), datetime.now(timezone.utc).isoformat(),
+                    request.action, request.mode, request.level, request.mission_id, sources,
+                    hashlib.sha256(request.prompt.encode('utf-8')).hexdigest(),
+                    hashlib.sha256(request.traceback.encode('utf-8')).hexdigest() if request.traceback is not None else None,
+                    response, answer.usage.input_tokens, answer.usage.output_tokens,
+                ))
+                db.commit()
+        except (sqlite3.Error, OSError, ValueError, TypeError) as exc:
+            raise AssistantError(f"Não foi possível salvar o histórico de assistência: {exc}") from exc
+        return identity
