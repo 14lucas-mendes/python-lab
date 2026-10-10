@@ -33,6 +33,22 @@ def test_seed_progress_preserves_defaults():
     assert actual == AppProgress()
 
 
+@pytest.mark.parametrize(
+    "payload",
+    [
+        {"legacy_progress": {"001": {"status": "completed"}}},
+        {"missions": {}, "legacy_progress": {"001": {"status": "completed"}}},
+    ],
+)
+def test_unknown_progress_envelope_is_rejected_instead_of_discarded(payload):
+    with pytest.raises(ProgressError, match="legacy_progress"):
+        decode_progress(encoded(payload))
+
+
+def test_partial_known_progress_envelope_keeps_seed_defaults():
+    assert decode_progress(encoded({"missions": {}})) == AppProgress()
+
+
 def test_legacy_partial_attempt_preserves_defaults_and_content():
     payload = valid_progress()
     payload["missions"]["001"] = {
@@ -162,6 +178,12 @@ def test_invalid_json_is_a_domain_error():
 def test_valid_sessions_decode_to_tuple():
     session = valid_session()
     assert decode_sessions(encoded({"sessions": [session]})) == (session,)
+
+
+def test_unknown_session_envelope_is_rejected_instead_of_discarded():
+    payload = {"sessions": [valid_session()], "legacy_sessions": [{"id": "older"}]}
+    with pytest.raises(SessionError, match="legacy_sessions"):
+        decode_sessions(encoded(payload))
 
 
 def test_unknown_event_field_is_rejected():

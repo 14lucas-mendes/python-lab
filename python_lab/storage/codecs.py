@@ -96,6 +96,11 @@ def _mission(raw: object, mission_id: str) -> MissionProgress:
 def decode_progress(raw: bytes) -> AppProgress:
     """Decode legacy progress without replacing unknown or corrupt state with a seed."""
     payload = _json_object(raw, ProgressError, "Progresso")
+    unknown_fields = payload.keys() - {"current_mission_id", "missions", "evidence"}
+    if unknown_fields:
+        raise ProgressError(
+            f"Progresso inválido: campos desconhecidos: {', '.join(sorted(unknown_fields))}"
+        )
     current_id = payload.get("current_mission_id")
     if current_id is not None and not isinstance(current_id, str):
         raise ProgressError("Progresso inválido: current_mission_id deve ser texto ou nulo")
@@ -127,6 +132,11 @@ def _event_valid(item: object) -> bool:
 def decode_sessions(raw: bytes) -> tuple[dict[str, object], ...]:
     """Decode legacy session history, preserving event order and data."""
     payload = _json_object(raw, SessionError, "Histórico de sessão")
+    unknown_fields = payload.keys() - {"sessions"}
+    if unknown_fields:
+        raise SessionError(
+            f"Histórico de sessão inválido: campos desconhecidos: {', '.join(sorted(unknown_fields))}"
+        )
     sessions = payload.get("sessions")
     if not isinstance(sessions, list):
         raise SessionError("Histórico de sessão inválido: sessions deve ser uma lista")
