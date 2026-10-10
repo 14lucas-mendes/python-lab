@@ -231,3 +231,37 @@ def test_entrypoint_version_comes_from_distribution_metadata(monkeypatch, capsys
     with pytest.raises(SystemExit):
         main(["--version"])
     assert "7.8.9" in capsys.readouterr().out
+
+
+def test_classic_redirected_cp1252_handles_all_legacy_commands(tmp_path):
+    """Real redirected output must match a CP1252 consumer and keep accents."""
+    import os
+    import subprocess
+    import sys
+    from python_lab.progress import ProgressRepository
+
+    env = os.environ.copy()
+    env["PYTHONIOENCODING"] = "cp1252"
+    inputs = "\n".join([
+        "/goal", "/skills", "/missions", "/mission 001", "/concepts 001",
+        "/start 001", "/status", "/plan", "registros de manutenção", "saída válida",
+        "acumular e verificar", "lista vazia", "/test", "/test details", "/hint",
+        '/explain "A solução usa um dicionário."', "/history", "/session", "/evidence",
+        "/help", "/exit", "",
+    ])
+    result = subprocess.run(
+        [sys.executable, "-c", "import sys; from python_lab.cli import main; sys.exit(main(sys.argv[1:]))",
+         "--classic", "--data-dir", str(tmp_path / "state")],
+        input=inputs.encode("cp1252"), env=env, capture_output=True,
+    )
+    output = result.stdout.decode("cp1252")
+    assert result.returncode == 0, result.stderr.decode("cp1252", errors="replace")
+    assert "Missão atual: 001" in output
+    assert "001" in output and "011" in output and "Comandos" in output
+    assert "Planejamento" in output and "Saída" in output and "Pista" in output
+    assert "Histórico de tentativas" in output and "Sessão atual" in output
+    assert "Progresso salvo. Até a próxima sessão." in output
+    progress = ProgressRepository(tmp_path / "state" / "lab.sqlite3").load().missions["001"]
+    assert progress.plan["input"] == "registros de manutenção"
+    assert progress.explanation == "A solução usa um dicionário."
+    assert progress.attempts == 1 and progress.hints_revealed == 1

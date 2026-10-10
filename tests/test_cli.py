@@ -1,3 +1,5 @@
+import pytest
+
 from pathlib import Path
 
 from rich.console import Console
@@ -376,3 +378,21 @@ def test_removed_active_mission_is_actionable(app):
     app.start("001")
     with pytest.raises(ApplicationError, match="ativa.*001.*catálogo"):
         PythonLabApp(app.goal, app.skills, [], app.repository, app.project_root)
+
+
+@pytest.mark.parametrize("encoding", ["cp1252", "utf-8"])
+def test_supplied_console_preserves_its_encoding_and_supported_text(app, encoding):
+    from io import BytesIO, TextIOWrapper
+    from rich.panel import Panel
+
+    sink = BytesIO()
+    stream = TextIOWrapper(sink, encoding=encoding, errors="strict")
+    console = Console(file=stream, width=100)
+    cli = PythonLabCLI(app, console)
+    cli.console.print(Panel("ação: ✓ → 中文 😀"))
+    cli.console.file.flush()
+    output = sink.getvalue().decode(encoding)
+    expected = "ação: ✓ → 中文 😀" if encoding == "utf-8" else "ação: ? ? ?? ?"
+    assert expected in output
+    assert cli.console.file.encoding == encoding
+    assert stream.encoding == encoding and stream.errors == "strict"

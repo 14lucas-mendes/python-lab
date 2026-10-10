@@ -66,8 +66,38 @@ jobs:
         if: runner.os == 'Windows'
         shell: pwsh
         run: |
-          & ./scripts/install-lab.ps1 -CheckOnly
-          if ($LASTEXITCODE -ne 0) { throw "Installer check failed: $LASTEXITCODE" }
+          $installerLog = Join-Path $env:RUNNER_TEMP 'python-lab-installer.log'
+          try {
+            & ./scripts/install-lab.ps1 -CheckOnly *> $installerLog
+            if ($LASTEXITCODE -ne 0) { throw "Installer check failed: $LASTEXITCODE" }
+            Get-Content -Raw $installerLog | Write-Host
+          } catch {
+            $failure = $_
+            $output = if (Test-Path $installerLog) { Get-Content -Raw $installerLog } else { '' }
+            Write-Host $output
+            $diagnostic = "$output`n$($failure | Out-String)$($failure.ScriptStackTrace)"
+            if ($diagnostic.Length -gt 6000) { $diagnostic = $diagnostic.Substring($diagnostic.Length - 6000) }
+            $diagnostic = $diagnostic.Replace('%', '%25').Replace("`r", '%0D').Replace("`n", '%0A')
+            Write-Output "::error title=Native PowerShell installer validation::$diagnostic"
+            throw
+          }
       - name: Full suite including native runner, TUI and installer regressions
         shell: bash
-        run: '"$PYTHON" -m pytest -ra'
+        run: |
+          suite_log="$RUNNER_TEMP/python-lab-pytest.log"
+          if "$PYTHON" -m pytest -ra > "$suite_log" 2>&1; then
+            cat "$suite_log"
+          else
+            suite_status=$?
+            cat "$suite_log"
+            diagnostic="$(cat "$suite_log")"
+            if (( ${#diagnostic} > 6000 )); then
+              diagnostic="${diagnostic: -6000}"
+            fi
+            diagnostic="pytest exit: $suite_status"$'\n'"$diagnostic"
+            diagnostic="${diagnostic//%/%25}"
+            diagnostic="${diagnostic//$'\r'/%0D}"
+            diagnostic="${diagnostic//$'\n'/%0A}"
+            printf '::error title=Native pytest suite::%s\n' "$diagnostic"
+            exit "$suite_status"
+          fi

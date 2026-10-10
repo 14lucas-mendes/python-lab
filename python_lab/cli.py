@@ -15,7 +15,7 @@ from python_lab.commands import ALIASES, COMMANDS, DEFAULT_SUMMARIES, CommandDis
 from python_lab.catalog import CatalogError, load_goal, load_missions, load_roadmap, load_skills
 from python_lab.learning import CompletionError, HintError, LearningError
 from python_lab.progress import ProgressError, ProgressRepository
-from python_lab.presentation import test_feedback
+from python_lab.presentation import encoding_safe_console, test_feedback
 from python_lab.session import SessionError, SessionLog
 from python_lab.storage.codecs import decode_progress, decode_sessions
 from python_lab.storage.database import connection, has_user_state
@@ -52,7 +52,7 @@ class PythonLabCLI:
         session_log: SessionLog | None = None,
     ) -> None:
         self.app = app
-        self.console = console or Console()
+        self.console = encoding_safe_console(console or Console())
         self.session_log = session_log
         self._last_summary = ""
         self.handlers = {
@@ -540,13 +540,13 @@ def _run_tui(app: PythonLabApp, session_log: SessionLog | None) -> int:
             try:
                 session_log.close("Sessão encerrada")
             except SessionError as exc:
-                Console().print(str(exc), style="red", markup=False)
+                encoding_safe_console(Console()).print(str(exc), style="red", markup=False)
     return 0
 
 
 def main(argv: Sequence[str] | None = None) -> int:
     args = _argument_parser().parse_args(argv)
-    console = Console()
+    console = encoding_safe_console(Console())
     if sys.version_info < (3, 11):
         console.print(
             "Python Lab requer Python 3.11 ou mais recente.", style="red", markup=False

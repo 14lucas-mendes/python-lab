@@ -17,7 +17,7 @@ from python_lab.app import ApplicationError, PythonLabApp
 from python_lab.commands import ALIASES, COMMANDS, parse_command
 from python_lab.learning import HintError, LearningError
 from python_lab.models import TestResult
-from python_lab.presentation import test_feedback
+from python_lab.presentation import encoding_safe_console, test_feedback
 from python_lab.progress import ProgressError
 from python_lab.session import SessionError, SessionLog
 from python_lab.tui.screens import ConfirmScreen, ExplainScreen, PlanScreen
@@ -560,4 +560,4 @@ class PythonLabTUI(App[None]):
             if self.screen_stack:
                 self.notify(str(exc), severity="error")
             else:
-                Console().print(str(exc), style="red", markup=False)
+                encoding_safe_console(Console()).print(str(exc), style="red", markup=False)
