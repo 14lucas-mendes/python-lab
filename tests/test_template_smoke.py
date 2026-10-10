@@ -59,7 +59,7 @@ def test_generated_project_in_clean_venv(tmp_path, template, project_name):
     venv.EnvBuilder(with_pip=True, system_site_packages=False).create(venv_dir)
     executable_dir = venv_dir / ("Scripts" if os.name == "nt" else "bin")
     python = executable_dir / ("python.exe" if os.name == "nt" else "python")
-    assert "include-system-site-packages = false" in (venv_dir / "pyvenv.cfg").read_text()
+    assert "include-system-site-packages = false" in (venv_dir / "pyvenv.cfg").read_text(encoding="utf-8")
     run([python, "-m", "pip", "install", "-c", CONSTRAINTS, "-e", ".[dev]"], target)
     run([python, "-m", "pip", "check"], target)
     suite = run([python, "-m", "pytest", "-q"], target)

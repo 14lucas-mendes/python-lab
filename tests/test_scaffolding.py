@@ -37,24 +37,24 @@ def test_registered_project_structure_and_name_normalization(tmp_path, template)
     assert all(path.is_file() for path in result.files)
     with pytest.raises(FrozenInstanceError):
         result.template = "changed"
-    manifest = tomllib.loads((target / "pyproject.toml").read_text())
+    manifest = tomllib.loads((target / "pyproject.toml").read_text(encoding="utf-8"))
     assert manifest["project"]["name"] == "my-app"
     assert "pytest" in " ".join(manifest["project"]["optional-dependencies"]["dev"])
-    assert ".venv/" in (target / ".gitignore").read_text()
-    readme = (target / "README.md").read_text()
+    assert ".venv/" in (target / ".gitignore").read_text(encoding="utf-8")
+    readme = (target / "README.md").read_text(encoding="utf-8")
     for command in ["python -m venv .venv", ".venv/bin/python", ".venv\\Scripts\\python.exe", 'pip install -e ".[dev]"', "-m pytest"]:
         assert command in readme
-    assert "__package__" not in "".join(path.read_text() for path in result.files)
+    assert "__package__" not in "".join(path.read_text(encoding="utf-8") for path in result.files)
     if template == "cli":
         assert manifest["project"]["scripts"] == {"my_app": "my_app.main:main"}
-        assert "--name" in (target / "src/my_app/main.py").read_text()
-        assert "Olá, Ana!" in (target / "tests/test_app.py").read_text()
+        assert "--name" in (target / "src/my_app/main.py").read_text(encoding="utf-8")
+        assert "Olá, Ana!" in (target / "tests/test_app.py").read_text(encoding="utf-8")
         assert manifest["project"]["dependencies"] == []
     else:
         assert "fastapi" in " ".join(manifest["project"]["dependencies"])
         assert "httpx" in " ".join(manifest["project"]["optional-dependencies"]["dev"])
-        assert "TestClient" in (target / "tests/test_app.py").read_text()
-        assert "/health" in (target / "tests/test_app.py").read_text()
+        assert "TestClient" in (target / "tests/test_app.py").read_text(encoding="utf-8")
+        assert "/health" in (target / "tests/test_app.py").read_text(encoding="utf-8")
 
 
 def test_generation_is_offline_and_never_starts_processes(tmp_path, monkeypatch):
@@ -89,7 +89,7 @@ def test_existing_target_is_preserved(tmp_path, kind):
     with pytest.raises(AssistantError, match="exist"):
         Service().create("cli", target)
     if kind != "dangling_symlink":
-        assert original.read_text() == "keep"
+        assert original.read_text(encoding="utf-8") == "keep"
     if "symlink" in kind:
         assert target.is_symlink()
 
@@ -152,8 +152,8 @@ def test_failed_write_rolls_back_only_owned_files(tmp_path, monkeypatch, introdu
         Service().create("cli", target)
     if introduced:
         assert {path.name for path in target.iterdir()} == {"user.txt", "README.md"}
-        assert (target / "user.txt").read_text() == "keep"
-        assert (target / "README.md").read_text() == "edited by user"
+        assert (target / "user.txt").read_text(encoding="utf-8") == "keep"
+        assert (target / "README.md").read_text(encoding="utf-8") == "edited by user"
     else:
         assert not target.exists()
 
@@ -170,7 +170,7 @@ def test_competing_target_creation_is_preserved(tmp_path, monkeypatch):
     monkeypatch.setattr(Path, "mkdir", competitor)
     with pytest.raises(AssistantError, match="exist"):
         Service().create("cli", target)
-    assert (target / "keep.txt").read_text() == "keep"
+    assert (target / "keep.txt").read_text(encoding="utf-8") == "keep"
 
 
 def test_concurrent_preexisting_output_file_is_never_overwritten(tmp_path, monkeypatch):
@@ -185,7 +185,7 @@ def test_concurrent_preexisting_output_file_is_never_overwritten(tmp_path, monke
     with pytest.raises(AssistantError):
         Service().create("cli", target)
     assert list(target.iterdir()) == [target / "README.md"]
-    assert (target / "README.md").read_text() == "user owns this"
+    assert (target / "README.md").read_text(encoding="utf-8") == "user owns this"
 
 
 def test_replaced_owned_file_is_preserved_on_rollback(tmp_path, monkeypatch):
@@ -203,7 +203,7 @@ def test_replaced_owned_file_is_preserved_on_rollback(tmp_path, monkeypatch):
     with pytest.raises(AssistantError):
         Service().create("cli", target)
     assert list(target.iterdir()) == [target / "README.md"]
-    assert (target / "README.md").read_text() == "user replacement"
+    assert (target / "README.md").read_text(encoding="utf-8") == "user replacement"
 
 
 def test_introduced_symlink_directory_cannot_redirect_writes(tmp_path, monkeypatch):
@@ -231,13 +231,13 @@ def test_fastapi_manifest_keeps_testclient_compatible_starlette(tmp_path):
     _, Service, _ = scaffold_api()
     target = tmp_path / "app"
     Service().create("fastapi", target)
-    project = tomllib.loads((target / "pyproject.toml").read_text())
+    project = tomllib.loads((target / "pyproject.toml").read_text(encoding="utf-8"))
     assert "starlette>=0.52,<1" in project["project"]["dependencies"]
 
 
 def test_explicit_package_data_covers_every_registered_resource():
     _, _, registry = scaffold_api()
-    manifest = tomllib.loads((Path(__file__).resolve().parents[1] / "pyproject.toml").read_text())
+    manifest = tomllib.loads((Path(__file__).resolve().parents[1] / "pyproject.toml").read_text(encoding="utf-8"))
     packaged = set(manifest["tool"]["setuptools"]["package-data"]["python_lab.scaffolding"])
     expected = {f"templates/{template}/{path}" for template, paths in registry.TEMPLATES.items() for path in paths}
     assert packaged == expected
@@ -258,20 +258,20 @@ def test_literal_token_in_name_remains_data_in_all_generated_references(tmp_path
     target = tmp_path / name
     package = name.replace("-", "_")
     result = Service().create(template, target)
-    manifest = tomllib.loads((target / "pyproject.toml").read_text())
+    manifest = tomllib.loads((target / "pyproject.toml").read_text(encoding="utf-8"))
     assert manifest["project"]["name"] == name
     assert target / f"src/{package}/main.py" in result.files
-    generated_test = (target / "tests/test_app.py").read_text()
+    generated_test = (target / "tests/test_app.py").read_text(encoding="utf-8")
     assert f"from {package}.main import " in generated_test
     # Parse actual imports as Python, including hyphenated token-bearing names.
     import ast
     ast.parse(generated_test)
     if template == "cli":
         assert manifest["project"]["scripts"] == {package: f"{package}.main:main"}
-        assert f"-m {package}.main --name Ana" in (target / "README.md").read_text()
+        assert f"-m {package}.main --name Ana" in (target / "README.md").read_text(encoding="utf-8")
     else:
-        assert f"-m uvicorn {package}.main:app --reload" in (target / "README.md").read_text()
-    assert f'"""{name} application."""' in (target / f"src/{package}/__init__.py").read_text()
+        assert f"-m uvicorn {package}.main:app --reload" in (target / "README.md").read_text(encoding="utf-8")
+    assert f'"""{name} application."""' in (target / f"src/{package}/__init__.py").read_text(encoding="utf-8")
 
 
 @pytest.mark.parametrize("template,name", [
