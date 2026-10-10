@@ -36,6 +36,7 @@ class Workspace:
                 raise ContextError("Root deve ser um diretório existente.")
             if _excluded(selected_root) or _excluded(self.root):
                 raise ContextError("Diretório excluído do contexto.")
+            self._selected_root = selected_root
         except (OSError, RuntimeError, TypeError, ValueError) as exc:
             raise ContextError("Não foi possível resolver o diretório do workspace.") from exc
 
@@ -44,9 +45,14 @@ class Workspace:
             raise ContextError("Selecione arquivos usando Path.")
         selected = path if path.is_absolute() else self.root / path
         try:
-            selected_relative = selected.relative_to(self.root)
             resolved = selected.resolve(strict=True)
             resolved_relative = resolved.relative_to(self.root)
+            try:
+                selected_relative = selected.relative_to(self.root)
+            except ValueError:
+                # Retain the configured root spelling for absolute selections,
+                # but resolve the actual selection above before accepting it.
+                selected_relative = selected.relative_to(self._selected_root)
         except (OSError, RuntimeError, ValueError) as exc:
             raise ContextError("Arquivo inexistente ou fora do workspace.") from exc
         if _excluded(selected_relative) or _excluded(resolved_relative):

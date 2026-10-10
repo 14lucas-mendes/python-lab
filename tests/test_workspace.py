@@ -52,6 +52,47 @@ def test_relative_selection_is_relative_to_workspace(tmp_path):
     assert snapshot.sources[0].path == "nested/main.py"
 
 
+def test_absolute_selection_through_workspace_root_alias_preserves_captured_source(tmp_path):
+    root = tmp_path / "project"
+    captured = "ação = 'olá'\r\n".encode("utf-8")
+    write_source(root, content=captured)
+    alias = tmp_path / "project-alias"
+    link_or_skip(alias, root)
+    selected = alias / "main.py"
+    assert selected.is_absolute()
+
+    snapshot = Workspace(alias).snapshot([selected])
+
+    assert snapshot.root == root.resolve()
+    assert snapshot.sources[0].path == "main.py"
+    assert snapshot.sources[0].text.encode("utf-8") == captured
+    assert snapshot.sources[0].sha256 == hashlib.sha256(captured).hexdigest()
+
+
+def test_retargeted_workspace_root_alias_cannot_capture_external_file(tmp_path):
+    root = tmp_path / "project"
+    write_source(root)
+    alias = tmp_path / "project-alias"
+    link_or_skip(alias, root)
+    workspace = Workspace(alias)
+    outside = tmp_path / "outside"
+    write_source(outside, content=b"private bytes\n")
+    alias.unlink()
+    link_or_skip(alias, outside)
+
+    with pytest.raises(ContextError):
+        workspace.snapshot([alias / "main.py"])
+
+
+def test_canonical_and_root_aliased_selections_are_duplicate_files(tmp_path):
+    root = tmp_path / "project"
+    canonical = write_source(root)
+    alias = tmp_path / "project-alias"
+    link_or_skip(alias, root)
+    with pytest.raises(ContextError):
+        Workspace(alias).snapshot([canonical, alias / "main.py"])
+
+
 def test_only_selected_files_are_captured_without_executing_content(tmp_path):
     marker = tmp_path / "executed"
     selected = write_source(tmp_path, content=f"open({str(marker)!r}, 'w').write('bad')\n".encode())
@@ -149,6 +190,19 @@ def test_git_repository_allows_selected_non_ignored_file(git_repo):
     write_source(git_repo, ".gitignore", b"private.py\n")
     path = write_source(git_repo, "public.py")
     assert Workspace(git_repo).snapshot([path]).sources[0].path == "public.py"
+
+
+def test_absolute_root_alias_selection_is_checked_against_canonical_git_repository(git_repo):
+    write_source(git_repo, ".gitignore", b"private.py\n")
+    write_source(git_repo, "public.py")
+    write_source(git_repo, "private.py")
+    alias = git_repo.parent / (git_repo.name + "-alias")
+    link_or_skip(alias, git_repo)
+    workspace = Workspace(alias)
+
+    assert workspace.snapshot([alias / "public.py"]).sources[0].path == "public.py"
+    with pytest.raises(ContextError):
+        workspace.snapshot([alias / "private.py"])
 
 
 def test_gitignore_is_respected_even_for_tracked_files(git_repo):
