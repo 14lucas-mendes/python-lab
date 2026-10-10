@@ -4,6 +4,8 @@ import asyncio
 from dataclasses import asdict, dataclass, replace
 import json
 import threading
+from collections.abc import Callable
+from datetime import datetime, timezone
 from uuid import uuid4
 
 from python_lab.analysis import (
@@ -20,10 +22,12 @@ from python_lab.assistant.models import (
     PatchProposal,
     ReviewProvider,
     ReviewReply,
+    validate_answer,
 )
 from python_lab.assistant.patches import PatchService
 from python_lab.assistant.policy import TutorPolicy
 from python_lab.runtime.processes import ProcessCleanupError
+from python_lab.learning_events import AssistanceEvent, AssistanceRecorder
 
 
 @dataclass(frozen=True)
@@ -40,11 +44,15 @@ class ReviewService:
         provider: ReviewProvider | None,
         patches: PatchService,
         history: ConversationRepository,
+        *, on_assistance: Callable[..., None] | None = None,
+        capture_attempt: Callable[[str | None], str | None] | None = None,
     ):
         self.analysis = analysis
         self.provider = provider
         self.patches = patches
         self.history = history
+        self.on_assistance = on_assistance
+        self.capture_attempt = capture_attempt
 
     async def review(
         self, request: AssistantRequest, *, cancel: threading.Event | None = None
@@ -54,6 +62,10 @@ class ReviewService:
         if self.patches.workspace.root != request.snapshot.root:
             raise AssistantError("Propostas pertencem a outro workspace.")
         request_id = uuid4().hex
+        try:
+            attempt_id = self.capture_attempt(request.mission_id) if self.capture_attempt else None
+        except Exception as exc:
+            raise AssistantError(f"Não foi possível capturar a tentativa da missão: {exc}") from exc
         action_cancel = cancel if cancel is not None else threading.Event()
         if action_cancel.is_set():
             raise asyncio.CancelledError()
@@ -113,6 +125,7 @@ class ReviewService:
             raise asyncio.CancelledError()
         if not isinstance(reply, ReviewReply):
             raise AssistantError("Envelope de revisão inválido.")
+        reply = replace(reply, answer=validate_answer(asdict(reply.answer), request.snapshot))
         if reply.answer.assistance_level > request.level:
             raise AssistantError("Resposta excede o nível de assistência solicitado.")
         selected = {source.path: source.sha256 for source in request.snapshot.sources}
@@ -140,4 +153,13 @@ class ReviewService:
         if action_cancel.is_set():
             raise asyncio.CancelledError()
         self.history.append(request, reply.answer, request_id=request_id)
+        try:
+            event = AssistanceEvent(request.mission_id, "review", reply.answer.assistance_level,
+                                    datetime.now(timezone.utc).isoformat(), request_id)
+            if self.on_assistance:
+                self.on_assistance(event, attempt_id=attempt_id)
+            else:
+                AssistanceRecorder(self.history.database_path).record(event, attempt_id=attempt_id)
+        except Exception as exc:
+            raise AssistantError(f"Não foi possível registrar a assistência: {exc}") from exc
         return ReviewResult(analysis, reply.answer, tuple(proposals))

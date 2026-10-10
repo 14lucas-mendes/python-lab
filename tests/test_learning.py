@@ -98,3 +98,28 @@ def test_completed_mission_can_be_started_again_without_erasing_evidence():
     assert progress.evidence == [
         {"skill": "debugging", "mission": "001", "result": "demonstrated"}
     ]
+
+
+@pytest.mark.parametrize('maximum, reference', [(4, False), (0, True), (4, True)])
+def test_assisted_completion_evidence_is_practicing(maximum, reference):
+    progress = MissionProgress(plan={key: 'ok' for key in ('input', 'output', 'steps', 'risks')},
+                               tests_passed=True, explanation='Verifiquei o contrato',
+                               max_assistance_level=maximum, reference_viewed=reference)
+    evidence = complete_mission(mission(), progress, [])
+    assert evidence[0]['result'] == 'practicing'
+    assert evidence[0]['assistance_level'] == (4 if reference else maximum)
+    assert evidence[0]['origin'] == 'mission_completion'
+
+
+def test_restart_resets_assistance_and_identity_preserving_evidence():
+    previous = {'skill': 'debugging', 'mission': '001', 'result': 'practicing', 'assistance_level': 4}
+    old = MissionProgress(status='completed', max_assistance_level=4, reference_viewed=True)
+    old_identity = old.attempt_id
+    progress = AppProgress(missions={'001': old}, evidence=[previous.copy()])
+    restarted = start_mission(mission(), progress, [mission()])
+    assert restarted.max_assistance_level == 0
+    assert not restarted.reference_viewed
+    assert restarted.attempt_id != old_identity
+    identity = restarted.attempt_id
+    assert start_mission(mission(), progress, [mission()]).attempt_id == identity
+    assert progress.evidence == [previous]

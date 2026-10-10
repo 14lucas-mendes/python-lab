@@ -3,6 +3,7 @@ from dataclasses import dataclass
 import threading
 from datetime import datetime, timezone
 from pathlib import Path
+from uuid import uuid4
 
 from python_lab.learning import (
     CompletionError,
@@ -15,6 +16,7 @@ from python_lab.learning import (
 from python_lab.catalog import CatalogError
 from python_lab.models import AppProgress, Goal, Mission, MissionProgress, RoadmapCycle, Skill, TestResult
 from python_lab.progress import ProgressRepository
+from python_lab.learning_events import AssistanceEvent, AssistanceRecorder
 from python_lab.runtime.processes import ProcessCleanupError
 from python_lab.test_runner import run_tests, solution_fingerprint
 
@@ -199,18 +201,46 @@ class PythonLabApp:
         progress = self.current_progress()
         if progress.attempts == 0:
             raise ApplicationError("Execute /test antes de pedir pistas")
+        is_reference = progress.hints_revealed >= len(mission.hints) - 1
         hint = reveal_hint(mission, progress, confirm_reference=confirm_reference)
-        self.persist()
+        level = 4 if is_reference else min(progress.hints_revealed, 3)
+        self.record_assistance(AssistanceEvent(
+            mission.id, "reference" if level == 4 else "hint", level,
+            datetime.now(timezone.utc).isoformat(), uuid4().hex,
+        ), attempt_id=progress.attempt_id)
         return hint
 
-    def record_full_solution(self, mission_id: str) -> None:
-        """Record explicit level-four help on its captured mission identity."""
+    def capture_assistance_attempt(self, mission_id: str | None) -> str | None:
+        if mission_id is None:
+            return None
         self.mission_by_id(mission_id)
         progress = self.progress.missions.get(mission_id)
         if progress is None or progress.status != "started":
             raise ApplicationError(f"Missão não iniciada para registrar ajuda: {mission_id}")
-        progress.reference_viewed = True
-        self.persist()
+        return progress.attempt_id
+
+    def record_assistance(self, event: AssistanceEvent, *, attempt_id: str | None = None) -> None:
+        if event.mission_id is not None:
+            self.mission_by_id(event.mission_id)
+        try:
+            AssistanceRecorder(self.repository.path).record(
+                event, repository=self.repository, progress=self.progress, attempt_id=attempt_id,
+            )
+        except Exception:
+            self.progress = copy.deepcopy(self._persisted_progress)
+            raise
+        self._persisted_progress = copy.deepcopy(self.progress)
+
+    def record_full_solution(
+        self, mission_id: str, *, request_id: str | None = None,
+        action: str = "reference", attempt_id: str | None = None,
+    ) -> None:
+        """Record explicit level-four help on its captured mission identity."""
+        if attempt_id is None:
+            attempt_id = self.capture_assistance_attempt(mission_id)
+        self.record_assistance(AssistanceEvent(
+            mission_id, action, 4, datetime.now(timezone.utc).isoformat(), request_id or uuid4().hex,
+        ), attempt_id=attempt_id)
 
     def tests_are_current(self) -> bool:
         progress = self.current_progress()

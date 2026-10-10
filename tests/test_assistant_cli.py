@@ -35,11 +35,13 @@ def test_check_works_without_provider_and_reports_findings(tmp_path):
 
 
 def test_explain_captures_workspace_mode_and_mission(tmp_path, app):
+    from dataclasses import replace
     (tmp_path / 'sample.py').write_text('print(1)\n', encoding='utf-8')
     snapshot = Workspace(tmp_path).snapshot((Path('sample.py'),))
     provider = RecordingProvider(AssistantAnswer('Summary', 'Explanation', ('Step',),
         (CodeReference('sample.py', 1, 1),), 0, Usage(3, 2)))
     service = AssistantService(provider, AnalysisService(), ConversationRepository(tmp_path / 'history.sqlite3'))
+    app.missions[0] = replace(app.missions[0], solution_path=tmp_path / 'sample.py')
     app.start('001')
     commands = AssistantCommands(service, Workspace(tmp_path), 'tutor', app=app)
     result = asyncio.run(commands.explain(('sample.py',)))
@@ -146,7 +148,7 @@ def test_classic_default_mode_follows_mission_and_explicit_override(app, tmp_pat
         app.start('001')
         assert cli.execute('/explain-code code.py')
         assert [request.mode for request in provider.requests] == ['assistant', 'tutor']
-        assert provider.requests[1].mission_id == '001'
+        assert provider.requests[1].mission_id is None  # unrelated project selection
         assert cli.execute('/mode assistant')
         assert cli.execute('/explain-code code.py')
         assert provider.requests[2].mode == 'assistant'

@@ -139,4 +139,4 @@ def test_tui_default_mode_tracks_mission_and_explicit_override(app, tmp_path):
             await ask()
     asyncio.run(run())
     assert [request.mode for request in provider.requests] == ['assistant', 'tutor', 'assistant']
-    assert provider.requests[1].mission_id == '001'
+    assert provider.requests[1].mission_id is None  # unrelated project selection

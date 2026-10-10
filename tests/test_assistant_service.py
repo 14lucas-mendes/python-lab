@@ -106,15 +106,20 @@ def test_full_solution_uses_captured_mission_after_selection_changes(app, tmp_pa
 
 
 def test_full_solution_progress_failure_does_not_report_success(app, tmp_path, monkeypatch):
-    from python_lab.progress import ProgressError
-
     app.start('001')
     captured = snapshot(tmp_path)
     assistant, _, _ = service(tmp_path, sample_answer(captured, level=4), callback=app.record_full_solution)
-    monkeypatch.setattr(app.repository, 'save', lambda progress: (_ for _ in ()).throw(ProgressError('disk full')))
+    # D1 saves the event and maximum in one transaction; inject at that real
+    # write boundary rather than the former, separate repository.save call.
+    from python_lab.storage.database import connection
+    with connection(app.repository.path) as db:
+        db.execute("CREATE TRIGGER reject_help BEFORE UPDATE ON progress BEGIN SELECT RAISE(ABORT, 'disk full'); END")
+        db.commit()
     with pytest.raises(AssistantError, match='registrar'):
         asyncio.run(assistant.execute(sample_request(captured, level=4, mission_id='001')))
     assert not app.progress.missions['001'].reference_viewed
+    with connection(app.repository.path) as db:
+        assert db.execute('SELECT COUNT(*) FROM assistance_events').fetchone()[0] == 0
 
 
 def test_hint_does_not_complete_mission(app, tmp_path):

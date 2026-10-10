@@ -167,21 +167,24 @@ def test_test_output_treats_student_text_as_literal(app, monkeypatch):
     assert "ValueError: [/audit]" in console.export_text()
 
 
-def test_persistence_error_is_reported_without_traceback(app, monkeypatch):
+def test_persistence_error_is_reported_without_traceback(app):
     console = Console(record=True, width=100)
     cli = PythonLabCLI(app=app, console=console)
     cli.execute("/start 001")
     app.current_progress().attempts = 1
-    monkeypatch.setattr(
-        app.repository,
-        "save",
-        lambda progress: (_ for _ in ()).throw(ProgressError("falha de disco")),
-    )
+    app.persist()
+    from python_lab.storage.database import connection
+    with connection(app.repository.path) as db:
+        db.execute("CREATE TRIGGER reject_help BEFORE UPDATE ON progress BEGIN SELECT RAISE(ABORT, 'falha de disco'); END")
+        db.commit()
 
     assert cli.execute("/hint") is True
     output = console.export_text()
     assert "falha de disco" in output
     assert "Traceback" not in output
+    assert app.current_progress().hints_revealed == 0
+    with connection(app.repository.path) as db:
+        assert db.execute('SELECT COUNT(*) FROM assistance_events').fetchone()[0] == 0
 
 
 def test_explain_rejects_solution_changed_after_passing_tests(app):

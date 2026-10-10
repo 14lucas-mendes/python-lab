@@ -43,7 +43,8 @@ def _evidence_valid(item: object, missions: dict[str, MissionProgress]) -> bool:
     if not isinstance(item, dict):
         return False
     if item.keys() - {
-        "skill", "mission", "result", "help_level", "tests_passed", "explanation", "timestamp"
+        "skill", "mission", "result", "help_level", "tests_passed", "explanation", "timestamp",
+        "assistance_level", "origin"
     }:
         return False
     if any(not isinstance(item.get(key), str) for key in ("skill", "mission", "explanation", "timestamp")):
@@ -55,6 +56,11 @@ def _evidence_valid(item: object, missions: dict[str, MissionProgress]) -> bool:
     if not _nonnegative_int(item.get("help_level")):
         return False
     if not isinstance(item.get("tests_passed"), bool):
+        return False
+    level = item.get("assistance_level")
+    if level is not None and (type(level) is not int or not 0 <= level <= 4):
+        return False
+    if "origin" in item and (not isinstance(item["origin"], str) or not item["origin"].strip()):
         return False
     return True
 
@@ -74,6 +80,14 @@ def _mission(raw: object, mission_id: str) -> MissionProgress:
     for key in ("tests_passed", "reference_viewed"):
         if not isinstance(getattr(mission, key), bool):
             raise ProgressError(f"Progresso inválido: missão {mission_id} {key} inválido")
+    if "max_assistance_level" not in raw:
+        mission.max_assistance_level = 4 if mission.reference_viewed else min(mission.hints_revealed, 3)
+    if type(mission.max_assistance_level) is not int or not 0 <= mission.max_assistance_level <= 4:
+        raise ProgressError(f"Progresso inválido: missão {mission_id} max_assistance_level inválido")
+    if "attempt_id" not in raw:
+        mission.attempt_id = "legacy:" + mission_id
+    if not isinstance(mission.attempt_id, str) or not mission.attempt_id.strip():
+        raise ProgressError(f"Progresso inválido: missão {mission_id} attempt_id inválido")
     for key in ("explanation", "tested_solution_path", "tested_solution_fingerprint"):
         value = getattr(mission, key)
         if value is not None and not isinstance(value, str):
@@ -120,6 +134,8 @@ def decode_progress(raw: bytes) -> AppProgress:
     for index, item in enumerate(evidence):
         if not _evidence_valid(item, missions):
             raise ProgressError(f"Progresso inválido: evidence[{index}] malformada")
+        item.setdefault("assistance_level", None)
+        item.setdefault("origin", "legacy")
     return AppProgress(current_mission_id=current_id, missions=missions, evidence=list(evidence))
 
 

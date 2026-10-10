@@ -1,4 +1,5 @@
 from datetime import datetime, timezone
+from uuid import uuid4
 
 from python_lab.models import AppProgress, Mission, MissionProgress
 
@@ -55,6 +56,8 @@ def start_mission(mission: Mission, progress: AppProgress, missions: list[Missio
         mission_progress.tests_passed = False
         mission_progress.hints_revealed = 0
         mission_progress.reference_viewed = False
+        mission_progress.max_assistance_level = 0
+        mission_progress.attempt_id = uuid4().hex
         mission_progress.explanation = None
         mission_progress.tested_solution_path = None
         mission_progress.tested_solution_fingerprint = None
@@ -75,6 +78,9 @@ def reveal_hint(mission: Mission, progress: MissionProgress, confirm_reference: 
     progress.hints_revealed += 1
     if is_reference:
         progress.reference_viewed = True
+    progress.max_assistance_level = max(
+        progress.max_assistance_level, 4 if is_reference else min(progress.hints_revealed, 3)
+    )
     return mission.hints[next_index]
 
 
@@ -114,8 +120,10 @@ def complete_mission(
             {
                 "skill": skill,
                 "mission": mission.id,
-                "result": _skill_result(skill, mission.id, progress.reference_viewed, existing_evidence),
+                "result": _skill_result(skill, mission.id, progress.reference_viewed or progress.max_assistance_level == 4, existing_evidence),
                 "help_level": progress.hints_revealed,
+                "assistance_level": 4 if progress.reference_viewed else progress.max_assistance_level,
+                "origin": "mission_completion",
                 "tests_passed": progress.tests_passed,
                 "explanation": progress.explanation,
                 "timestamp": timestamp,

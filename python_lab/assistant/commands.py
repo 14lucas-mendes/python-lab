@@ -6,6 +6,7 @@ from pathlib import Path
 import threading
 from collections.abc import Awaitable, Callable
 import hashlib
+from datetime import datetime, timezone
 
 from python_lab.analysis import AnalysisError, AnalysisService
 from python_lab.app import PythonLabApp
@@ -22,6 +23,7 @@ from python_lab.progress import ProgressError
 from python_lab.commands import CommandResult
 from python_lab.runtime.processes import ProcessCleanupError
 from python_lab.workspace import Workspace
+from python_lab.learning_events import AssistanceEvent, AssistanceRecorder
 
 
 class AssistantCommands:
@@ -87,12 +89,19 @@ class AssistantCommands:
             exc.__cause__, (OSError, TypeError, ValueError))
         return cls._error(exc, "execution" if operational else "usage")
 
+    def _associated_mission(self, snapshot):
+        mission_id = self.app.progress.current_mission_id if self.app else None
+        if mission_id is None:
+            return None
+        solution = self.app.mission_by_id(mission_id).solution_path.resolve()
+        return mission_id if any((snapshot.root / source.path).resolve() == solution for source in snapshot.sources) else None
+
     async def review(self, args, *, cancel=None):
         action_cancel = cancel or threading.Event()
         try:
             snapshot = await self._blocking(
                 lambda: self.workspace.snapshot(self._selection(args)), action_cancel)
-            mission_id = self.app.progress.current_mission_id if self.app else None
+            mission_id = self._associated_mission(snapshot)
             request = AssistantRequest("review", "Revise o código e proponha correções com diff.",
                                        self.mode, 3, snapshot, mission_id=mission_id)
             if self.review_factory is None:
@@ -135,8 +144,12 @@ class AssistantCommands:
             mission_id = self.app.progress.current_mission_id if self.app else None
             if mission_id and self.app.mission_by_id(mission_id).solution_path.resolve() != destination.resolve():
                 mission_id = None
+            attempt_id = self.app.capture_assistance_attempt(mission_id) if self.app else None
             workspace_id = hashlib.sha256(str(self.workspace.root).encode("utf-8")).hexdigest()
-            event_key = f"apply:{workspace_id}:{patch.id}:{patch.change.before_sha256}"
+            # Local proposal IDs can recur in another store or selected file.
+            scope = f"{self.patches.data_dir.resolve()}\0{destination.resolve()}"
+            scope_id = hashlib.sha256(scope.encode("utf-8")).hexdigest()
+            event_key = f"apply:{workspace_id}:{scope_id}:{patch.id}:{patch.change.before_sha256}"
             data = {"id": patch.id, "path": str(destination), "diff": diff,
                     "status": "unverified", "event_key": event_key}
             preview = CommandResult(False, f"Destino: {destination}\n{diff}\nConfirme com --yes: lab apply {patch.id} --yes.",
@@ -149,12 +162,19 @@ class AssistantCommands:
                 if action_cancel.is_set():
                     raise asyncio.CancelledError()
                 self.patches.apply(patch, confirmed=True)
-                if mission_id is not None:
-                    try:
-                        self.app.record_full_solution(mission_id)
-                    except (ApplicationError, ProgressError, OSError) as exc:
-                        return CommandResult(False, f"Arquivo aplicado; falha ao registrar ajuda: {exc}",
-                                             {**data, "error_kind": "execution", "applied": True})
+                try:
+                    if mission_id is not None:
+                        self.app.record_full_solution(mission_id, request_id=event_key,
+                                                      action="apply", attempt_id=attempt_id)
+                    else:
+                        event = AssistanceEvent(None, "apply", 4, datetime.now(timezone.utc).isoformat(), event_key)
+                        if self.app:
+                            self.app.record_assistance(event)
+                        else:
+                            AssistanceRecorder(self.patches.data_dir / "lab.sqlite3").record(event)
+                except (ApplicationError, ProgressError, OSError) as exc:
+                    return CommandResult(False, f"Arquivo aplicado; falha ao registrar ajuda: {exc}",
+                                         {**data, "error_kind": "execution", "applied": True})
                 return None
             try:
                 recording_failure = await self._blocking(write, action_cancel)
@@ -235,6 +255,12 @@ class AssistantCommands:
             self.service = self.service_factory()
         if self.service is None:
             raise AssistantError("Assistente indisponível: configure provider='openai', model e LAB_API_KEY.")
+        if self.app:
+            # Injected services use the same attempt-aware path as the runtime.
+            if self.service.on_assistance is None:
+                self.service.on_assistance = self.app.record_assistance
+            if self.service.capture_attempt is None:
+                self.service.capture_attempt = self.app.capture_assistance_attempt
         return self.service
 
     def _selection(self, names: tuple[str, ...]) -> tuple[Path, ...]:
@@ -326,7 +352,7 @@ class AssistantCommands:
             if traceback_path is not None:
                 trace_snapshot = self.workspace.snapshot((Path(traceback_path),))
                 traceback = trace_snapshot.sources[0].text
-            mission_id = self.app.progress.current_mission_id if self.app is not None else None
+            mission_id = self._associated_mission(snapshot)
             mode = self.mode
             prompt = ("Explique o código selecionado e suas causas."
                       if action == "explain" else "Diagnostique o traceback usando o código selecionado como dados.")

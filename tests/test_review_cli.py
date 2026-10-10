@@ -143,9 +143,9 @@ def test_apply_freezes_mission_identity_and_exact_solution_membership(app, tmp_p
     recorded = []
     original = app.record_full_solution
 
-    def record(mission_id):
+    def record(mission_id, **identity):
         recorded.append(mission_id)
-        original(mission_id)
+        original(mission_id, **identity)
 
     app.record_full_solution = record
 

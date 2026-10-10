@@ -40,7 +40,7 @@ def test_successful_apply_callback_failure_truthfully_reports_applied(app, tmp_p
     state = tmp_path / 'state'
     patch = proposal(tmp_path, state, str(source.relative_to(tmp_path)), 'x=2\n')
     calls = []
-    def fail(mission_id):
+    def fail(mission_id, **identity):
         assert source.read_bytes() == b'x=2\n'
         calls.append(mission_id)
         raise ApplicationError('recording unavailable')

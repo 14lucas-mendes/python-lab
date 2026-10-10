@@ -82,6 +82,8 @@ class AssistantRuntime:
                 self.provider, AnalysisService(),
                 ConversationRepository(self.data_dir / "lab.sqlite3"),
                 on_full_solution=self.app.record_full_solution if self.app else None,
+                on_assistance=self.app.record_assistance if self.app else None,
+                capture_attempt=self.app.capture_assistance_attempt if self.app else None,
             )
         return self.service
 
@@ -103,7 +105,9 @@ def _assistant_commands(workspace, mode, data_dir, service_factory, *, app=None,
         except AssistantError:
             assistant = None
         return ReviewService(AnalysisService(), assistant.provider if assistant else None,
-                             patches, ConversationRepository(data_dir / "lab.sqlite3"))
+                             patches, ConversationRepository(data_dir / "lab.sqlite3"),
+                             on_assistance=app.record_assistance if app else None,
+                             capture_attempt=app.capture_assistance_attempt if app else None)
     return AssistantCommands(service, workspace, mode, app=app,
         service_factory=service_factory, patches=patches,
         verification=VerificationService(ProcessRunner(), store=VerificationStore(data_dir)),

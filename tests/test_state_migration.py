@@ -246,3 +246,156 @@ def test_separate_databases_share_complete_backups(tmp_path, monkeypatch):
         }
     assert ProgressRepository(state / "one.sqlite3").load().current_mission_id == "001"
     assert ProgressRepository(state / "two.sqlite3").load().current_mission_id == "001"
+
+
+def _old_sqlite(path, *, reference=False, hints=2, maximum=None):
+    """Keep a live WAL connection, so a raw file copy would lose real rows."""
+    import sqlite3
+    db = sqlite3.connect(path)
+    db.execute('PRAGMA journal_mode=WAL')
+    db.execute('PRAGMA wal_autocheckpoint=0')
+    db.execute('CREATE TABLE progress (id INTEGER PRIMARY KEY, payload TEXT NOT NULL, revision INTEGER NOT NULL)')
+    item = {'status': 'started', 'hints_revealed': hints, 'reference_viewed': reference}
+    if maximum is not None:
+        item['max_assistance_level'] = maximum
+    old_evidence = {'skill': 'debugging', 'mission': '001', 'result': 'demonstrated', 'help_level': 1,
+                    'tests_passed': True, 'explanation': 'old', 'timestamp': 'old-time'}
+    payload = json.dumps({'current_mission_id': '001', 'missions': {'001': item}, 'evidence': [old_evidence]})
+    db.execute('INSERT INTO progress VALUES (1,?,7)', (payload,))
+    db.commit()
+    return db, payload, old_evidence
+
+
+@pytest.mark.parametrize('reference,hints,maximum,expected', [(True, 1, None, 4), (False, 8, None, 3),
+                                                            (False, 2, None, 2), (True, 2, 1, 1)])
+def test_versioned_migration_backs_up_live_wal_and_preserves_old_evidence(tmp_path, reference, hints, maximum, expected):
+    import sqlite3
+    target = tmp_path / 'lab.sqlite3'
+    live, raw, evidence = _old_sqlite(target, reference=reference, hints=hints, maximum=maximum)
+    try:
+        stale = ProgressRepository(target)
+        stale._revision = 7
+        progress = ProgressRepository(target).load()
+        assert progress.missions['001'].max_assistance_level == expected
+        assert progress.evidence[0] == {**evidence, 'assistance_level': None, 'origin': 'legacy'}
+        with sqlite3.connect(target) as db:
+            assert db.execute('PRAGMA user_version').fetchone()[0] == 2
+            assert db.execute('SELECT revision FROM progress').fetchone()[0] == 8
+        backups = list((tmp_path / 'backups').glob('*.bak'))
+        assert len(backups) == 1
+        restored = tmp_path / 'restored.sqlite3'
+        restored.write_bytes(backups[0].read_bytes())
+        with sqlite3.connect(restored) as db:
+            assert db.execute('PRAGMA integrity_check').fetchone()[0] == 'ok'
+            assert db.execute('SELECT payload,revision FROM progress').fetchone() == (raw, 7)
+            assert db.execute('PRAGMA user_version').fetchone()[0] == 0
+        with pytest.raises(ProgressError, match='Conflito'):
+            stale.save(progress)
+        assert ProgressRepository(target).load() == progress
+        assert len(list((tmp_path / 'backups').glob('*.bak'))) == 1
+    finally:
+        live.close()
+
+
+@pytest.mark.parametrize('failure', ['backup', 'write'])
+def test_sqlite_schema_migration_failure_preserves_original_rows_and_version(tmp_path, monkeypatch, failure):
+    import sqlite3
+    target = tmp_path / 'lab.sqlite3'
+    live, raw, _ = _old_sqlite(target)
+    try:
+        if failure == 'backup':
+            def fail(*args):
+                raise OSError('backup unavailable')
+            monkeypatch.setattr('python_lab.storage.database._backup_database', fail)
+        else:
+            live.execute("CREATE TRIGGER reject_migration BEFORE UPDATE ON progress BEGIN SELECT RAISE(ABORT, 'migration denied'); END")
+            live.commit()
+        with pytest.raises(ProgressError, match='backup unavailable|migration denied'):
+            ProgressRepository(target).load()
+        assert live.execute('SELECT payload,revision FROM progress').fetchone() == (raw, 7)
+        assert live.execute('PRAGMA user_version').fetchone()[0] == 0
+        assert live.execute("SELECT name FROM sqlite_master WHERE name='assistance_events'").fetchone() is None
+        live.execute('CREATE TABLE original_still_usable (value TEXT)')
+        live.execute("INSERT INTO original_still_usable VALUES ('ok')")
+        live.commit()
+        assert live.execute('SELECT value FROM original_still_usable').fetchone()[0] == 'ok'
+    finally:
+        live.close()
+
+
+@pytest.mark.parametrize('field,value', [('max_assistance_level', True), ('max_assistance_level', 5),
+                                       ('max_assistance_level', -1), ('max_assistance_level', '2'),
+                                       ('attempt_id', False), ('attempt_id', '')])
+def test_codec_rejects_malformed_assistance_fields(field, value):
+    with pytest.raises(ProgressError):
+        decode_progress(json.dumps({'missions': {'001': {field: value}}}).encode())
+
+
+@pytest.mark.parametrize('level', [True, -1, 5, '2', 1.0])
+def test_codec_rejects_invalid_nested_evidence_levels(level):
+    item = {'skill': 'debugging', 'mission': '001', 'result': 'demonstrated', 'help_level': 1,
+            'tests_passed': True, 'explanation': 'old', 'timestamp': 'old-time', 'assistance_level': level}
+    with pytest.raises(ProgressError):
+        decode_progress(json.dumps({'missions': {'001': {}}, 'evidence': [item]}).encode())
+
+
+@pytest.mark.parametrize('reference,hints,maximum,expected', [(True, 1, None, 4), (False, 5, None, 3), (False, 2, 0, 0)])
+def test_json_import_derives_only_missing_assistance_and_keeps_exact_sources(tmp_path, reference, hints, maximum, expected):
+    from datetime import datetime, timezone
+    from python_lab.learning_events import AssistanceEvent, AssistanceRecorder
+    legacy = tmp_path / 'legacy'
+    _legacy(legacy)
+    raw = json.loads((legacy / 'progress.json').read_bytes())
+    item = raw['missions']['001']
+    item.pop('attempt_id', None)
+    item.pop('max_assistance_level', None)
+    item['reference_viewed'] = reference
+    item['hints_revealed'] = hints
+    if maximum is not None:
+        item['max_assistance_level'] = maximum
+    raw['evidence'] = [{'skill': 'debugging', 'mission': '001', 'result': 'demonstrated', 'help_level': 1,
+                        'tests_passed': True, 'explanation': 'old', 'timestamp': 'old-time'}]
+    (legacy / 'progress.json').write_bytes((json.dumps(raw, indent=2) + '\n').encode())
+    original = {name: (legacy / name).read_bytes() for name in ('progress.json', 'sessions.json')}
+    target = tmp_path / 'state' / 'lab.sqlite3'
+    first = migrate_json_state(legacy, target)
+    progress = ProgressRepository(target).load()
+    assert progress.missions['001'].max_assistance_level == expected
+    assert progress.evidence[0]['assistance_level'] is None
+    assert progress.evidence[0]['result'] == 'demonstrated'
+    AssistanceRecorder(target).record(AssistanceEvent('001', 'explain', 0, datetime.now(timezone.utc).isoformat(), 'after-import'))
+    second = migrate_json_state(legacy, target)
+    assert first.imported and not second.imported
+    with connection(target) as db:
+        assert db.execute('SELECT COUNT(*) FROM assistance_events').fetchone()[0] == 1
+    assert all((legacy / name).read_bytes() == value for name, value in original.items())
+    assert {path.read_bytes() for path in first.backup_paths} == set(original.values())
+
+
+def test_schema_backup_restores_live_wal_sessions_and_import_marker(tmp_path):
+    import sqlite3
+    target = tmp_path / 'lab.sqlite3'
+    live, raw, _ = _old_sqlite(target)
+    try:
+        live.execute('CREATE TABLE sessions (id TEXT PRIMARY KEY, started_at TEXT, ended_at TEXT)')
+        live.execute('CREATE TABLE events (id INTEGER PRIMARY KEY, session_id TEXT, timestamp TEXT, command TEXT, summary TEXT)')
+        live.execute('CREATE TABLE migrations (origin TEXT PRIMARY KEY, digest TEXT)')
+        live.execute("INSERT INTO sessions VALUES ('open', 'start', NULL)")
+        live.execute("INSERT INTO events VALUES (1, 'open', 'now', '/test', 'passed')")
+        live.execute("INSERT INTO migrations VALUES ('legacy-origin', 'exact-digest')")
+        live.commit()
+        assert target.with_name(target.name + '-wal').stat().st_size > 0
+        migrated = ProgressRepository(target).load()
+        assert ProgressRepository(target).load().missions['001'].attempt_id == migrated.missions['001'].attempt_id
+        assert SessionLog(target).load()[0]['events'][0]['summary'] == 'passed'
+        backup = next((tmp_path / 'backups').glob('*.bak'))
+        restored = tmp_path / 'restored.sqlite3'
+        restored.write_bytes(backup.read_bytes())
+        with sqlite3.connect(restored) as db:
+            assert db.execute('SELECT payload,revision FROM progress').fetchone() == (raw, 7)
+            assert db.execute('SELECT * FROM sessions').fetchall() == [('open', 'start', None)]
+            assert db.execute('SELECT * FROM events').fetchall() == [(1, 'open', 'now', '/test', 'passed')]
+            assert db.execute('SELECT * FROM migrations').fetchall() == [('legacy-origin', 'exact-digest')]
+            assert db.execute('PRAGMA integrity_check').fetchone()[0] == 'ok'
+    finally:
+        live.close()

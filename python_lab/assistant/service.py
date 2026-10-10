@@ -6,6 +6,7 @@ from dataclasses import asdict, replace
 import json
 import threading
 from uuid import uuid4
+from datetime import datetime, timezone
 
 from python_lab.analysis import AnalysisCancelled, AnalysisError, AnalysisService
 from python_lab.assistant.errors import AssistantError
@@ -13,23 +14,34 @@ from python_lab.assistant.history import ConversationRepository
 from python_lab.assistant.models import AssistantAnswer, AssistantRequest, LLMProvider, validate_answer
 from python_lab.assistant.policy import TutorPolicy
 from python_lab.runtime.processes import ProcessCleanupError
+from python_lab.learning_events import AssistanceEvent, AssistanceRecorder
 
 
 class AssistantService:
     def __init__(
         self, provider: LLMProvider, analysis: AnalysisService, history: ConversationRepository,
         *, on_full_solution: Callable[[str], None] | None = None,
+        on_assistance: Callable[..., None] | None = None,
+        capture_attempt: Callable[[str | None], str | None] | None = None,
     ):
         self.provider = provider
         self.analysis = analysis
         self.history = history
         self.on_full_solution = on_full_solution
+        # Preserve B4's bound app callback while using D1's richer internal path.
+        owner = getattr(on_full_solution, "__self__", None)
+        self.on_assistance = on_assistance or getattr(owner, "record_assistance", None)
+        self.capture_attempt = capture_attempt or getattr(owner, "capture_assistance_attempt", None)
         self.policy = TutorPolicy()
 
     async def execute(self, request: AssistantRequest, *, cancel: threading.Event | None = None) -> AssistantAnswer:
         # Freeze the local request identity and context before asynchronous work.
         request_id = uuid4().hex
         captured = request
+        try:
+            attempt_id = self.capture_attempt(captured.mission_id) if self.capture_attempt else None
+        except Exception as exc:
+            raise AssistantError(f"Não foi possível capturar a tentativa da missão: {exc}") from exc
         action_cancel = cancel if cancel is not None else threading.Event()
         if action_cancel.is_set():
             raise asyncio.CancelledError()
@@ -95,9 +107,15 @@ class AssistantService:
             raise
         except Exception as exc:
             raise AssistantError(f"Não foi possível salvar o histórico de assistência: {exc}") from exc
-        if answer.assistance_level == 4 and captured.level == 4 and captured.mission_id and self.on_full_solution:
-            try:
+        try:
+            event = AssistanceEvent(captured.mission_id, captured.action, answer.assistance_level,
+                                    datetime.now(timezone.utc).isoformat(), request_id)
+            if self.on_assistance:
+                self.on_assistance(event, attempt_id=attempt_id)
+            elif answer.assistance_level == 4 and captured.mission_id and self.on_full_solution:
                 self.on_full_solution(captured.mission_id)
-            except Exception as exc:
-                raise AssistantError(f"Não foi possível registrar a solução completa na missão: {exc}") from exc
+            else:
+                AssistanceRecorder(self.history.database_path).record(event, attempt_id=attempt_id)
+        except Exception as exc:
+            raise AssistantError(f"Não foi possível registrar a assistência: {exc}") from exc
         return answer

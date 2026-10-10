@@ -61,6 +61,7 @@ def test_legacy_partial_attempt_preserves_defaults_and_content():
         status="started",
         attempts=2,
         attempt_history=[{"passed": False, "summary": "1 falho"}],
+        attempt_id="legacy:001",
     )
 
 
@@ -86,7 +87,7 @@ def test_full_attempt_and_evidence_are_preserved():
     payload["evidence"] = [evidence]
     actual = decode_progress(encoded(payload))
     assert actual.missions["001"].attempt_history == [attempt]
-    assert actual.evidence == [evidence]
+    assert actual.evidence == [{**evidence, "assistance_level": None, "origin": "legacy"}]
 
 
 def test_unknown_attempt_field_is_rejected():

@@ -37,8 +37,9 @@ class Analysis:
 
 
 class History:
-    def __init__(self):
+    def __init__(self, database_path=None):
         self.items = []
+        self.database_path = database_path
 
     def append(self, request, answer, *, request_id):
         self.items.append((request, answer, request_id))
@@ -91,7 +92,7 @@ def test_review_rejects_unselected_change_without_saving_history(tmp_path):
 
 def test_review_creates_local_id_and_persists_single_file_proposal(tmp_path):
     req = request(tmp_path)
-    history = History()
+    history = History(tmp_path / '.state' / 'lab.sqlite3')
     change = FileChange("a.py", req.snapshot.sources[0].sha256, "x=2\n")
     patches = PatchService(Workspace(tmp_path), tmp_path / ".state")
     result = asyncio.run(
