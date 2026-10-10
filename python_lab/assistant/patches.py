@@ -22,6 +22,30 @@ class PatchService:
         self.workspace = workspace
         self.data_dir = Path(data_dir)
 
+    def _private_directory(self, path: Path) -> None:
+        # A caller may choose an existing shared parent; protect our children
+        # without changing permissions of a directory we did not create.
+        try:
+            self.data_dir.mkdir(mode=0o700, parents=True)
+        except FileExistsError:
+            if not self.data_dir.is_dir():
+                raise
+        else:
+            self.data_dir.chmod(0o700)
+        if path.is_symlink():
+            raise OSError("Diretório de estado não pode ser symlink.")
+        path.mkdir(mode=0o700, exist_ok=True)
+        if path.is_symlink():
+            raise OSError("Diretório de estado mudou de destino.")
+        path.chmod(0o700)
+
+    @staticmethod
+    def _private_file(fd: int, path: Path) -> None:
+        if os.name == "posix":
+            os.fchmod(fd, 0o600)
+        else:
+            path.chmod(0o600)
+
     def _record_path(self, proposal_id: str) -> Path:
         if not isinstance(proposal_id, str) or not proposal_id:
             raise AssistantError("ID de proposta inválido.")
@@ -57,11 +81,15 @@ class PatchService:
     def preview(self, proposal: PatchProposal) -> str:
         self._saved(proposal)
         source = self._capture(proposal)
-        return "".join(difflib.unified_diff(
+        lines = difflib.unified_diff(
             source.text.splitlines(keepends=True),
             proposal.change.after_text.splitlines(keepends=True),
             fromfile=f"a/{source.path}", tofile=f"b/{source.path}",
-        ))
+        )
+        return "".join(
+            line if line.endswith("\n") else line + "\n\\ No newline at end of file\n"
+            for line in lines
+        )
 
     def save(self, proposal: PatchProposal) -> None:
         self._capture(proposal)
@@ -70,14 +98,27 @@ class PatchService:
         if path.exists():
             return
         payload = {"workspace": str(self.workspace.root), "proposal": asdict(proposal)}
+        temporary = None
         try:
-            path.parent.mkdir(parents=True, exist_ok=True)
-            with path.open("x", encoding="utf-8") as stream:
+            self._private_directory(path.parent)
+            fd, name = tempfile.mkstemp(prefix=".python-lab-proposal-", dir=path.parent)
+            temporary = Path(name)
+            with os.fdopen(fd, "w", encoding="utf-8") as stream:
+                self._private_file(stream.fileno(), temporary)
                 json.dump(payload, stream, ensure_ascii=False)
                 stream.flush()
                 os.fsync(stream.fileno())
+            # Publishing a complete record via hard link never replaces another ID owner.
+            try:
+                os.link(temporary, path)
+            except FileExistsError:
+                if self.load(proposal.id) != proposal:
+                    raise AssistantError("ID de proposta já pertence a outra proposta ou workspace.")
         except (OSError, TypeError, ValueError) as exc:
             raise AssistantError("Não foi possível salvar a proposta.") from exc
+        finally:
+            if temporary is not None:
+                temporary.unlink(missing_ok=True)
 
     def load(self, proposal_id: str) -> PatchProposal:
         path = self._record_path(proposal_id)
@@ -109,9 +150,11 @@ class PatchService:
         )
         backup_created = False
         try:
-            backup_path.parent.mkdir(parents=True, exist_ok=True)
-            with backup_path.open("xb") as backup:
-                backup_created = True
+            self._private_directory(backup_path.parent)
+            fd = os.open(backup_path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+            backup_created = True
+            with os.fdopen(fd, "wb") as backup:
+                self._private_file(backup.fileno(), backup_path)
                 backup.write(old_bytes)
                 backup.flush()
                 os.fsync(backup.fileno())

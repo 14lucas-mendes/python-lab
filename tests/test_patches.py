@@ -1,5 +1,7 @@
 """A proposal only replaces one captured source after explicit confirmation."""
 
+import json
+import os
 import stat
 from pathlib import Path
 
@@ -151,3 +153,84 @@ def test_post_replace_error_reports_recovery_backup(tmp_path, monkeypatch):
     assert source.read_bytes() == b"x=2\n"
     backup = Path(str(failure.value).split("Backup: ", 1)[1])
     assert backup.read_bytes() == b"x=1\n"
+
+
+def test_preview_marks_missing_final_newlines_without_changing_patch_bytes(tmp_path):
+    source, service, proposal = setup_patch(tmp_path, before=b"x=1", after="x=2")
+    diff = service.preview(proposal)
+    assert "-x=1\n\\ No newline at end of file\n+x=2\n\\ No newline at end of file\n" in diff
+    service.apply(proposal, confirmed=True)
+    assert source.read_bytes() == b"x=2"
+
+
+@pytest.mark.skipif(os.name != "posix", reason="POSIX mode bits are required")
+def test_state_files_and_directories_are_private_even_with_permissive_umask(tmp_path):
+    source, service, proposal = setup_patch(tmp_path)
+    source.chmod(0o600)
+    state = tmp_path / "state"
+    state.mkdir(mode=0o755)
+    state.chmod(0o755)
+    original_umask = os.umask(0)
+    try:
+        service.save(proposal)
+        service.apply(proposal, confirmed=True)
+    finally:
+        os.umask(original_umask)
+    assert stat.S_IMODE(state.stat().st_mode) == 0o755
+    for directory in (state / "proposals", state / "backups"):
+        assert stat.S_IMODE(directory.stat().st_mode) == 0o700
+        files = list(directory.iterdir())
+        assert len(files) == 1
+        assert stat.S_IMODE(files[0].stat().st_mode) == 0o600
+    assert stat.S_IMODE(source.stat().st_mode) == 0o600
+
+
+def test_partial_proposal_write_can_retry_same_id(tmp_path, monkeypatch):
+    _, service, proposal = setup_patch(tmp_path)
+    original_dump = json.dump
+    def fail_after_partial_write(payload, stream, **kwargs):
+        stream.write('{"incomplete":')
+        raise OSError("injected write failure")
+    monkeypatch.setattr("python_lab.assistant.patches.json.dump", fail_after_partial_write)
+    with pytest.raises(AssistantError, match="salvar"):
+        service.save(proposal)
+    monkeypatch.setattr("python_lab.assistant.patches.json.dump", original_dump)
+    service.save(proposal)
+    assert service.load(proposal.id) == proposal
+    assert len(list((tmp_path / "state" / "proposals").iterdir())) == 1
+
+
+@pytest.mark.skipif(os.name != "posix", reason="POSIX mode bits are required")
+def test_new_state_permissions_do_not_depend_on_restrictive_umask(tmp_path):
+    _, service, proposal = setup_patch(tmp_path)
+    original_umask = os.umask(0o777)
+    try:
+        service.save(proposal)
+    finally:
+        os.umask(original_umask)
+    state = tmp_path / "state"
+    record_dir = state / "proposals"
+    record = next(record_dir.iterdir())
+    assert stat.S_IMODE(state.stat().st_mode) == 0o700
+    assert stat.S_IMODE(record_dir.stat().st_mode) == 0o700
+    assert stat.S_IMODE(record.stat().st_mode) == 0o600
+
+
+@pytest.mark.parametrize("directory", ["proposals", "backups"])
+def test_state_child_symlink_cannot_redirect_private_content(tmp_path, directory):
+    source, service, proposal = setup_patch(tmp_path)
+    state = tmp_path / "state"
+    state.mkdir()
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    try:
+        (state / directory).symlink_to(outside, target_is_directory=True)
+    except OSError as exc:
+        pytest.skip(f"Symlinks unavailable: {exc}")
+    with pytest.raises(AssistantError):
+        if directory == "proposals":
+            service.save(proposal)
+        else:
+            service.apply(proposal, confirmed=True)
+    assert list(outside.iterdir()) == []
+    assert source.read_bytes() == b"x=1\n"
