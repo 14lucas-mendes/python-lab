@@ -19,7 +19,7 @@ def _transcript(tui: PythonLabTUI) -> str:
 
 
 def _drive(lab, callback, session_log=None):
-    session = session_log or SessionLog(lab.project_root / "data" / "sessions.json")
+    session = session_log or SessionLog(lab.repository.path)
     if session._current is None:
         session.start()
     tui = PythonLabTUI(lab=lab, session_log=session)
@@ -202,7 +202,7 @@ def test_tui_explain_completes_mission(app):
 
 
 def test_tui_quit_with_empty_composer_closes_session(app):
-    session = SessionLog(app.project_root / "data" / "sessions.json")
+    session = SessionLog(app.repository.path)
     session.start()
 
     async def scenario(tui, pilot):
@@ -222,7 +222,7 @@ def test_tui_quit_with_empty_composer_closes_session(app):
 
 
 def test_tui_exit_command_closes_session(app):
-    session = SessionLog(app.project_root / "data" / "sessions.json")
+    session = SessionLog(app.repository.path)
     session.start()
 
     async def scenario(tui, pilot):

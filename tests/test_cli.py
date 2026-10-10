@@ -264,12 +264,12 @@ def test_passing_tests_hide_raw_pytest_output(app, monkeypatch):
 
 
 def test_session_records_commands_and_lists_previous(app):
-    log = SessionLog(app.project_root / "data" / "sessions.json")
+    log = SessionLog(app.repository.path)
     log.start()
     log.record("/help", "Ajuda exibida")
     log.close("Sessão encerrada")
 
-    current = SessionLog(app.project_root / "data" / "sessions.json")
+    current = SessionLog(app.repository.path)
     current.start()
     console = Console(record=True, width=120)
     cli = PythonLabCLI(app=app, console=console, session_log=current)

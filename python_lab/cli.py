@@ -1,4 +1,5 @@
 import argparse
+import sqlite3
 import sys
 from pathlib import Path
 from typing import Sequence
@@ -14,6 +15,10 @@ from python_lab.learning import CompletionError, HintError, LearningError
 from python_lab.progress import ProgressError, ProgressRepository
 from python_lab.presentation import test_feedback
 from python_lab.session import SessionError, SessionLog
+from python_lab.storage.codecs import decode_progress, decode_sessions
+from python_lab.storage.database import connection, has_user_state
+from python_lab.storage.migration import migrate_json_state
+from python_lab.storage.paths import resolve_paths
 from python_lab.tui.app import PythonLabTUI
 
 
@@ -462,17 +467,45 @@ def _banner(app: PythonLabApp, console: Console) -> None:
     console.print(f"Próximo: {app.next_step()}", style="green")
 
 
-def build_app(project_root: Path | None = None) -> PythonLabApp:
+def build_app(project_root: Path | None = None, *, data_dir: Path | None = None) -> PythonLabApp:
     root = project_root or Path(__file__).resolve().parent.parent
+    paths = resolve_paths(root, data_dir)
+    legacy = root / "data"
+    old_progress = legacy / "progress.json"
+    old_sessions = legacy / "sessions.json"
+    database_path = paths.data_dir / "lab.sqlite3"
+    needs_migration = not database_path.exists()
+    if not needs_migration:
+        try:
+            with connection(database_path) as db:
+                needs_migration = not has_user_state(db) and db.execute("SELECT 1 FROM migrations LIMIT 1").fetchone() is None
+        except (sqlite3.Error, OSError, ValueError) as exc:
+            raise ProgressError(f"Banco de progresso inválido: {exc}") from exc
+    if needs_migration:
+        real_progress = False
+        real_sessions = False
+        if old_progress.exists():
+            state = decode_progress(old_progress.read_bytes())
+            real_progress = bool(state.current_mission_id or state.missions or state.evidence)
+        if old_sessions.exists():
+            real_sessions = bool(decode_sessions(old_sessions.read_bytes()))
+        if real_progress or real_sessions:
+            raise ProgressError(
+                f"Estado JSON legado encontrado. Execute lab migrate --from-dir {legacy} --data-dir {paths.data_dir}"
+            )
     missions = load_missions(root / "missions")
-    return PythonLabApp(
+    app = PythonLabApp(
         goal=load_goal(root / "data" / "goal.json"),
         skills=load_skills(root / "data" / "skills.json"),
         missions=missions,
-        repository=ProgressRepository(root / "data" / "progress.json"),
+        repository=ProgressRepository(paths.data_dir / "lab.sqlite3"),
         project_root=root,
         roadmap=load_roadmap(root / "data" / "roadmap.json", missions),
     )
+    current = app.progress.current_mission_id
+    if current is not None and current not in {mission.id for mission in missions}:
+        raise ProgressError(f"Missão ativa {current} não existe no catálogo. Restaure o catálogo ou revise os dados migrados.")
+    return app
 
 
 class _ArgumentParser(argparse.ArgumentParser):
@@ -492,6 +525,9 @@ def _argument_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="Usar o prompt lab> em vez da TUI em tela cheia.",
     )
+    parser.add_argument("--data-dir", type=Path, help="Diretório de dados do usuário")
+    parser.add_argument("command", nargs="?", choices=("migrate",))
+    parser.add_argument("--from-dir", type=Path, help="Diretório com JSON legado")
     return parser
 
 
@@ -535,9 +571,20 @@ def main(argv: Sequence[str] | None = None) -> int:
         return 2
     session_log: SessionLog | None = None
     try:
-        app = build_app()
-        session_log = SessionLog(app.project_root / "data" / "sessions.json")
+        if args.command == "migrate":
+            if args.from_dir is None:
+                console.print("Informe --from-dir para migrar.", style="red")
+                return 2
+            paths = resolve_paths(Path(__file__).resolve().parent.parent, args.data_dir)
+            report = migrate_json_state(args.from_dir, paths.data_dir / "lab.sqlite3")
+            console.print("Estado importado." if report.imported else "Estado já importado.")
+            return 0
+        app = build_app(data_dir=args.data_dir) if args.data_dir is not None else build_app()
+        session_log = SessionLog(app.repository.path)
         session_log.start()
+    except ValueError as exc:
+        console.print(str(exc), style="red", markup=False)
+        return 2
     except (ProgressError, ApplicationError, CatalogError, SessionError) as exc:
         console.print(str(exc), style="red", markup=False)
         return 1

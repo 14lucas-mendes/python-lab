@@ -32,11 +32,11 @@ def test_pilot_journey_with_real_tests_and_isolated_progress(tmp_path, size):
         load_goal(ROOT / "data" / "goal.json"),
         load_skills(ROOT / "data" / "skills.json"),
         missions,
-        ProgressRepository(tmp_path / "progress.json"),
+        ProgressRepository(tmp_path / "lab.sqlite3"),
         tmp_path,
         load_roadmap(ROOT / "data" / "roadmap.json", missions),
     )
-    session = SessionLog(tmp_path / "sessions.json")
+    session = SessionLog(tmp_path / "lab.sqlite3")
     session.start()
     tui = PythonLabTUI(lab, session)
 

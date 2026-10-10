@@ -32,6 +32,14 @@ def test_external_argument_is_rejected(capsys):
     assert "argumento inválido" in captured.err.lower()
 
 
+def test_data_dir_inside_catalog_is_reported_without_traceback(capsys):
+    from pathlib import Path
+
+    catalog_data = Path(__file__).resolve().parent.parent / "data"
+    assert main(["--data-dir", str(catalog_data)]) == 2
+    assert "fora do catálogo" in capsys.readouterr().out
+
+
 def test_classic_flag_enters_prompt_loop(app, monkeypatch, capsys):
     monkeypatch.setattr("python_lab.cli.build_app", lambda: app)
     monkeypatch.setattr(
