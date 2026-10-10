@@ -38,9 +38,30 @@ jobs:
       - name: Entrypoint and isolated classic smoke
         shell: bash
         run: |
-          "$LAB" --help
-          "$LAB" --version
-          printf '/missions\n/exit\n' | "$LAB" --classic --data-dir "$RUNNER_TEMP/python-lab-state"
+          smoke() {
+            local label="$1" smoke_status output diagnostic
+            shift
+            local smoke_log="$RUNNER_TEMP/python-lab-smoke-$label.log"
+            if "$@" > "$smoke_log" 2>&1; then
+              cat "$smoke_log"
+            else
+              smoke_status=$?
+              cat "$smoke_log"
+              output="$(cat "$smoke_log")"
+              if (( ${#output} > 6000 )); then
+                output="${output: -6000}"
+              fi
+              diagnostic="Command: $*; exit: $smoke_status"$'\n'"$output"
+              diagnostic="${diagnostic//%/%25}"
+              diagnostic="${diagnostic//$'\r'/%0D}"
+              diagnostic="${diagnostic//$'\n'/%0A}"
+              printf '::error title=lab %s smoke::%s\n' "$label" "$diagnostic"
+              return "$smoke_status"
+            fi
+          }
+          smoke help "$LAB" --help
+          smoke version "$LAB" --version
+          printf '/missions\n/exit\n' | smoke classic "$LAB" --classic --data-dir "$RUNNER_TEMP/python-lab-state"
       - name: Native PowerShell installer validation
         if: runner.os == 'Windows'
         shell: pwsh
