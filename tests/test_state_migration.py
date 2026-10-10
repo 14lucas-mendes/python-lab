@@ -1,5 +1,8 @@
 import json
+import os
 from dataclasses import asdict
+from concurrent.futures import ThreadPoolExecutor
+from threading import Barrier
 
 import pytest
 
@@ -7,6 +10,7 @@ from python_lab.models import AppProgress, MissionProgress
 from python_lab.progress import ProgressError, ProgressRepository
 from python_lab.session import SessionLog
 from python_lab.storage.migration import migrate_json_state
+from python_lab.storage.migration import _backup
 from python_lab.cli import build_app, main
 from python_lab.storage.codecs import decode_progress
 from python_lab.storage.database import connection
@@ -188,3 +192,57 @@ def test_build_app_refuses_json_at_database_path_as_domain_error(tmp_path):
     with pytest.raises(ProgressError, match="SQLite"):
         build_app(catalog, data_dir=state)
     assert target.read_bytes() == original
+
+
+def test_backup_exclusive_publish_collision_preserves_complete_winner(tmp_path, monkeypatch):
+    source = tmp_path / "progress.json"
+    raw = b'{"missions": {}}\n'
+    source.write_bytes(raw)
+    backups = tmp_path / "backups"
+    publishing = Barrier(2)
+    original_link = os.link
+    attempts = []
+
+    def collide_at_publish(source_path, destination_path):
+        attempts.append(destination_path)
+        publishing.wait(timeout=5)
+        return original_link(source_path, destination_path)
+
+    monkeypatch.setattr("python_lab.storage.migration.os.link", collide_at_publish)
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        futures = [pool.submit(_backup, source, raw, backups) for _ in range(2)]
+        paths = [future.result(timeout=10) for future in futures]
+
+    assert len(attempts) == 2
+    assert paths[0] == paths[1]
+    assert paths[0].read_bytes() == raw
+    assert source.read_bytes() == raw
+
+
+def test_separate_databases_share_complete_backups(tmp_path, monkeypatch):
+    legacy = tmp_path / "legacy"
+    _legacy(legacy)
+    state = tmp_path / "state"
+    publishing = Barrier(2)
+    original_link = os.link
+
+    def collide_at_publish(source_path, destination_path):
+        publishing.wait(timeout=5)
+        return original_link(source_path, destination_path)
+
+    monkeypatch.setattr("python_lab.storage.migration.os.link", collide_at_publish)
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        futures = [
+            pool.submit(migrate_json_state, legacy, state / database_name)
+            for database_name in ("one.sqlite3", "two.sqlite3")
+        ]
+        reports = [future.result(timeout=10) for future in futures]
+
+    assert all(report.imported for report in reports)
+    assert reports[0].backup_paths == reports[1].backup_paths
+    for report in reports:
+        assert {path.read_bytes() for path in report.backup_paths} == {
+            (legacy / "progress.json").read_bytes(), (legacy / "sessions.json").read_bytes()
+        }
+    assert ProgressRepository(state / "one.sqlite3").load().current_mission_id == "001"
+    assert ProgressRepository(state / "two.sqlite3").load().current_mission_id == "001"

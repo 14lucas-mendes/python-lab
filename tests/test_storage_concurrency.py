@@ -1,4 +1,10 @@
 import multiprocessing as mp
+import sqlite3
+from concurrent.futures import ThreadPoolExecutor
+from threading import Barrier, BrokenBarrierError
+
+from python_lab.storage.migration import migrate_json_state
+from python_lab.storage import database as database_module
 
 from python_lab.models import MissionProgress
 from python_lab.progress import ProgressError, ProgressRepository
@@ -84,3 +90,47 @@ def test_close_is_idempotent_and_events_are_capped(tmp_path):
     assert len(events) == MAX_EVENTS
     assert events[-1]["summary"] == "done"
     assert sum(item["command"] == "/exit" for item in events) == 1
+
+
+def test_simultaneous_importers_recognize_initially_absent_marker(tmp_path, monkeypatch):
+    import json
+    from dataclasses import asdict
+
+    legacy = tmp_path / "legacy"
+    legacy.mkdir()
+    progress = {"current_mission_id": "001", "missions": {"001": asdict(MissionProgress(status="started"))}, "evidence": []}
+    (legacy / "progress.json").write_text(json.dumps(progress))
+    target = tmp_path / "state" / "lab.sqlite3"
+    ProgressRepository(target).load()  # Build schema before forcing the marker interleaving.
+
+    marker_reads = Barrier(2)
+    original_connect = sqlite3.connect
+
+    class MarkerCursor:
+        def __init__(self, cursor):
+            self.cursor = cursor
+
+        def fetchone(self):
+            row = self.cursor.fetchone()
+            try:
+                marker_reads.wait(timeout=1)
+            except BrokenBarrierError:
+                pass
+            return row
+
+    class MarkerConnection(sqlite3.Connection):
+        def execute(self, sql, parameters=()):
+            cursor = super().execute(sql, parameters)
+            return MarkerCursor(cursor) if sql.startswith("SELECT digest FROM migrations") else cursor
+
+    def traced_connect(*args, **kwargs):
+        return original_connect(*args, **kwargs, factory=MarkerConnection)
+
+    monkeypatch.setattr(database_module.sqlite3, "connect", traced_connect)
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        futures = [pool.submit(migrate_json_state, legacy, target) for _ in range(2)]
+        reports = [future.result(timeout=10) for future in futures]
+
+    assert sorted(report.imported for report in reports) == [False, True]
+    assert ProgressRepository(target).load().current_mission_id == "001"
+    assert all(path.read_bytes() == (legacy / "progress.json").read_bytes() for report in reports for path in report.backup_paths)

@@ -3,6 +3,7 @@
 import hashlib
 import os
 import sqlite3
+import tempfile
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -27,14 +28,20 @@ def _backup(path: Path, raw: bytes, directory: Path) -> Path:
         if destination.read_bytes() != raw:
             raise ProgressError(f"Backup existente divergente: {destination}")
         return destination
+    descriptor, temporary_name = tempfile.mkstemp(prefix=f".{path.name}.", suffix=".tmp", dir=directory)
+    temporary = Path(temporary_name)
     try:
-        with destination.open("xb") as output:
+        with os.fdopen(descriptor, "wb") as output:
             output.write(raw)
             output.flush()
             os.fsync(output.fileno())
-    except Exception:
-        destination.unlink(missing_ok=True)
-        raise
+        try:
+            os.link(temporary, destination)
+        except FileExistsError:
+            if destination.read_bytes() != raw:
+                raise ProgressError(f"Backup existente divergente: {destination}")
+    finally:
+        temporary.unlink(missing_ok=True)
     return destination
 
 
@@ -55,13 +62,14 @@ def migrate_json_state(legacy_dir: Path, database_path: Path) -> MigrationReport
         origin = str(legacy_dir.resolve())
         digest = hashlib.sha256(b"".join(name.encode() + b"\x00" + raw for name, raw in sorted(inputs.items()))).hexdigest()
         with connection(database_path) as db:
+            db.execute("BEGIN IMMEDIATE")
             marker = db.execute("SELECT digest FROM migrations WHERE origin=?", (origin,)).fetchone()
             if marker:
                 if marker[0] != digest:
                     raise ProgressError("Origem de migração alterada desde a importação")
                 backups = tuple(_backup(legacy_dir / name, raw, database_path.parent / "backups") for name, raw in inputs.items())
+                db.commit()
                 return MigrationReport(False, backups)
-            db.execute("BEGIN IMMEDIATE")
             if has_user_state(db):
                 raise ProgressError("Banco já contém estado de usuário; migração recusada")
             backups = tuple(_backup(legacy_dir / name, raw, database_path.parent / "backups") for name, raw in inputs.items())
