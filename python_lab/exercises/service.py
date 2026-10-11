@@ -24,6 +24,7 @@ from python_lab.exercises.models import (DraftValidation, ExerciseDraft, MAX_DRA
 from python_lab.runtime.processes import ProcessCleanupError, ProcessRunner
 
 _CONFTEXT = '''import json
+import os
 from pathlib import Path
 import pytest
 from python_lab.solution_loader import load_solution
@@ -36,7 +37,11 @@ def pytest_addoption(parser):
 
 @pytest.fixture
 def solution(request):
-    return load_solution(Path(__file__).parent.parent / request.config.getoption("--lab-solution"))
+    mission = Path(__file__).parent.parent
+    selected = request.config.getoption("--lab-solution")
+    configured = os.environ.get("PYTHON_LAB_SOLUTION")
+    path = mission / selected if selected else Path(configured) if configured else mission / "starter.py"
+    return load_solution(path)
 
 @pytest.hookimpl(hookwrapper=True)
 def pytest_runtest_makereport(item, call):
@@ -46,7 +51,9 @@ def pytest_runtest_makereport(item, call):
                      "assertion": call.excinfo is not None and call.excinfo.type is AssertionError})
 
 def pytest_sessionfinish(session, exitstatus):
-    Path(session.config.getoption("--lab-evidence")).write_text(json.dumps(_reports), encoding="utf-8")
+    evidence = session.config.getoption("--lab-evidence")
+    if evidence:
+        Path(evidence).write_text(json.dumps(_reports), encoding="utf-8")
 '''
 _FILES = {'draft.json', 'mission.json', 'README.md', 'criteria.json', 'starter.py',
           'reference_solution.py', 'hints.json', 'tests/conftest.py', 'tests/test_exercise.py'}
@@ -213,6 +220,47 @@ class ExerciseService:
             finally:
                 Path(temporary).unlink(missing_ok=True)
 
+    @staticmethod
+    def _execution_unchanged(stage: Path, material: dict[str, bytes]) -> bool:
+        """Bind an executed copy to the reviewed bytes, including its harness."""
+        try:
+            _no_links(stage)
+            expected_tests = {name for name in material if name.startswith('tests/')}
+            actual_tests = {file.relative_to(stage).as_posix() for file in (stage / 'tests').rglob('*')}
+            if actual_tests != expected_tests:
+                return False
+            for name, expected in material.items():
+                file = stage / name
+                _no_links(file)
+                if not file.is_file():
+                    return False
+                with file.open('rb') as stream:
+                    if stream.read(MAX_DRAFT_FILE_BYTES + 1) != expected:
+                        return False
+            return True
+        except (AssistantError, OSError, ValueError, RuntimeError):
+            return False
+
+    def _run_captured(self, draft_path: Path, files: dict[str, bytes], selected: str,
+                      cancel: threading.Event | None) -> tuple[bool, bool, bool]:
+        # Each selection gets a newly allocated copy. The previous process and
+        # its temporary tree have been cleaned up before another selection runs.
+        with self._external_temp(draft_path, cancel) as stage:
+            if stage is None:
+                return False, False, True
+            (stage / 'tests').mkdir()
+            material = {**files, 'pytest.ini': b'[pytest]\n'}
+            for name, content in material.items():
+                (stage / name).write_bytes(content)
+            if not self._execution_unchanged(stage, material):
+                return False, False, cancel is not None and cancel.is_set()
+            success, failure, cancelled = self._run(stage, selected, cancel)
+            # ProcessRunner has completed descendant/reader cleanup. A result
+            # from modified code, tests or selection/evidence hooks is invalid.
+            if not self._execution_unchanged(stage, material):
+                return False, False, cancelled
+            return success, failure, cancelled
+
     def _run(self, stage: Path, selected: str, cancel: threading.Event | None) -> tuple[bool, bool, bool]:
         report, evidence = stage / f'{selected}.xml', stage / f'{selected}.json'
         # Fixed invocation, explicit fixture selection, isolated config and cache.
@@ -270,22 +318,15 @@ class ExerciseService:
             except (SyntaxError, ValueError):
                 result = DraftValidation(False, fingerprint, 'Sintaxe inválida; não é falha do contrato.')
             else:
-                with self._external_temp(path, cancel) as stage:
-                    if stage is None:
-                        result = DraftValidation(False, fingerprint, 'Validação cancelada.', True)
-                    else:
-                        (stage / 'tests').mkdir()
-                        for name in ('starter.py', 'reference_solution.py', 'tests/test_exercise.py', 'tests/conftest.py'):
-                            (stage / name).write_bytes(files[name])
-                        (stage / 'pytest.ini').write_text('[pytest]\n', encoding='utf-8')
-                        reference_pass, _, cancelled = self._run(stage, 'reference_solution.py', cancel)
-                        starter_failure = False
-                        if reference_pass and not cancelled:
-                            _, starter_failure, cancelled = self._run(stage, 'starter.py', cancel)
-                        result = DraftValidation(reference_pass and starter_failure and not cancelled, fingerprint,
-                            'Referência aprovada; starter falha por assert do contrato. Revisão didática ainda necessária.'
-                            if reference_pass and starter_failure and not cancelled else
-                            'Suite vazia/ignorada, referência reprovada ou starter sem falha de contrato.', cancelled)
+                reference_pass, _, cancelled = self._run_captured(path, files, 'reference_solution.py', cancel)
+                starter_failure = False
+                if reference_pass and not cancelled:
+                    _, starter_failure, cancelled = self._run_captured(path, files, 'starter.py', cancel)
+                result = DraftValidation(reference_pass and starter_failure and not cancelled, fingerprint,
+                    'Referência aprovada; starter falha por assert do contrato. Revisão didática ainda necessária.'
+                    if reference_pass and starter_failure and not cancelled else
+                    'Suite inválida, referência reprovada, starter sem falha de contrato ou material executado alterado.',
+                    cancelled)
         # Hash before and after execution: code cannot change review material and
         # retain a successful validation; cleanup completed before this point.
         if self._read(path)[2] != fingerprint:

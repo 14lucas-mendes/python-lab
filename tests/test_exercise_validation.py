@@ -251,3 +251,91 @@ def test_added_file_and_unvalidated_draft_cannot_publish(tmp_path):
     (path / 'extra.py').write_text('print("unexpected")')
     with pytest.raises(AssistantError):
         svc.publish(path, ROOT, approved=True)
+
+
+def test_complete_starter_cannot_validate_via_reference_rewriting_copy(tmp_path):
+    svc = service(tmp_path)
+    draft = sample_draft()
+    reference = ('from pathlib import Path\n'
+                 'Path(__file__).with_name("starter.py").write_text("def total(values): return None\\n")\n'
+                 'def total(values): return sum(values)\n')
+    path = svc.save_draft(replace(draft, starter=draft.reference, reference=reference))
+    result = svc.validate(path, execution_confirmed=True)
+    assert not result.passed, 'a rewritten temporary starter is not the reviewed starter'
+    assert (path / 'starter.py').read_text() == draft.reference
+    with pytest.raises(AssistantError):
+        svc.publish(path, ROOT, approved=True)
+
+
+@pytest.mark.parametrize('material', ['tests/test_exercise.py', 'tests/conftest.py', 'reference_solution.py', 'pytest.ini'])
+def test_reference_cannot_mutate_tested_material(tmp_path, material):
+    svc = service(tmp_path)
+    draft = sample_draft()
+    reference = ('from pathlib import Path\n'
+                 f'changed = Path(__file__).parent / {material!r}\n'
+                 'changed.write_bytes(changed.read_bytes() + b"\\n# modified tested copy\\n")\n'
+                 'def total(values): return sum(values)\n')
+    path = svc.save_draft(replace(draft, reference=reference))
+    assert not svc.validate(path, execution_confirmed=True).passed
+    with pytest.raises(AssistantError):
+        svc.publish(path, ROOT, approved=True)
+
+
+def test_starter_cannot_mutate_suite_while_failing_contract(tmp_path):
+    svc = service(tmp_path)
+    starter = ('from pathlib import Path\n'
+               'changed = Path(__file__).parent / "tests/test_exercise.py"\n'
+               'changed.write_bytes(changed.read_bytes() + b"\\n# changed by starter\\n")\n'
+               'def total(values): return None\n')
+    path = svc.save_draft(replace(sample_draft(), starter=starter))
+    assert not svc.validate(path, execution_confirmed=True).passed
+    with pytest.raises(AssistantError):
+        svc.publish(path, ROOT, approved=True)
+
+
+def test_each_selection_gets_its_own_reviewed_execution_copy(tmp_path):
+    class RecordingRunner(ProcessRunner):
+        def __init__(self):
+            super().__init__()
+            self.captures = []
+        def run(self, argv, cwd, **kwargs):
+            self.captures.append((cwd, (cwd / 'starter.py').read_bytes(),
+                                  (cwd / 'tests/test_exercise.py').read_bytes()))
+            return super().run(argv, cwd, **kwargs)
+    runner = RecordingRunner()
+    svc = service(tmp_path, runner)
+    draft = sample_draft()
+    path = svc.save_draft(draft)
+    assert svc.validate(path, execution_confirmed=True).passed
+    assert len(runner.captures) == 2
+    assert runner.captures[0][0] != runner.captures[1][0]
+    assert all(starter == draft.starter.encode() and tests == draft.tests.encode()
+               for _, starter, tests in runner.captures)
+
+
+def test_published_exercise_uses_existing_runner_solution_and_starter_default(tmp_path, monkeypatch):
+    from python_lab.test_runner import run_tests
+    monkeypatch.delenv('PYTHON_LAB_SOLUTION', raising=False)
+    svc = service(tmp_path)
+    draft = sample_draft()
+    path = svc.save_draft(draft)
+    assert svc.validate(path, execution_confirmed=True).passed
+    published = svc.publish(path, ROOT, approved=True)
+    correct = tmp_path / 'student.py'
+    correct.write_text(draft.reference, encoding='utf-8')
+    result = run_tests(published / 'tests', ROOT, solution_path=correct)
+    assert result.passed and result.return_code == 0, result.output
+    default = run_tests(published / 'tests', ROOT)
+    assert not default.passed and default.return_code == 1
+    assert '2 falho(s)' in default.summary
+    assert all('assert' in diagnostic for diagnostic in default.diagnostics)
+    assert 'TypeError' not in default.output
+
+
+def test_explicit_validation_selection_overrides_ordinary_solution_environment(tmp_path, monkeypatch):
+    external = tmp_path / 'unexpected.py'
+    external.write_text('raise RuntimeError("wrong solution selected")\n')
+    monkeypatch.setenv('PYTHON_LAB_SOLUTION', str(external))
+    svc = service(tmp_path)
+    path = svc.save_draft(sample_draft())
+    assert svc.validate(path, execution_confirmed=True).passed
