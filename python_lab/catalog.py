@@ -221,7 +221,7 @@ def compose_missions(
 ) -> list[Mission]:
     """Validate the complete installed/custom graph without changing either.
 
-    Internal D3 composition boundary; public application bootstrap comes later.
+    Shared composition boundary for publication and application bootstrap.
     catalog_dir is the installed project root containing missions/ and data/.
     Custom prerequisite edges may point to installed or other custom missions.
     """
@@ -278,3 +278,8 @@ def compose_missions(
     for mission_id in graph:
         visit(mission_id)
     return sorted(missions, key=lambda mission: (mission.cycle, mission.id))
+
+
+def load_catalog(installed_dir: Path, custom_dir: Path) -> list[Mission]:
+    """Load and validate installed plus user missions without writing either."""
+    return compose_missions(installed_dir, custom_dir)

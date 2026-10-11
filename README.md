@@ -146,7 +146,7 @@ max_session_output_tokens = 20000
 
 ```bash
 python -m pip install -c constraints/dev.txt -c constraints/assistant.txt -e '.[assistant]'
-export LAB_API_KEY='sua chave'  # configure no ambiente seguro; nunca no TOML
+# Configure LAB_API_KEY nas variáveis seguras do ambiente; nunca no TOML ou chat.
 ```
 
 No PowerShell, configure `LAB_API_KEY` como variável de ambiente do processo antes de iniciar `lab`. Nenhum modelo é escolhido automaticamente e a chave nunca entra no TOML. As respostas dependem de rede e consomem tokens; o limite configurado cobre tokens de **saída** por sessão, não custo total. Não há repetição automática após erro. Cada seleção é explícita e limitada a 20 arquivos, 32768 bytes por arquivo e 131072 bytes no total. Código, traceback e respostas são exibidos como texto literal; explicação, diagnóstico e revisão preservam os arquivos do projeto. Somente a aplicação confirmada de uma proposta altera um arquivo, sem concluir missão. Na TUI, `/cancel`, o botão Cancelar ou Ctrl+C interrompem a ação e aguardam a limpeza antes de liberar o campo. Ctrl+C durante `/test` aguarda a limpeza do processo de testes antes de sair. No prompt clássico, `/cancel` pode ser digitado enquanto a análise ou a resposta está em curso; o próximo comando só é aceito após a limpeza.
@@ -192,7 +192,78 @@ de execução. `--help` e `--version` dispensam configuração e SDK.
 imprime os arquivos e próximos comandos. Não instala dependências nem executa
 código. Siga as instruções do README gerado para preparar o ambiente e iniciar
 a CLI ou o FastAPI. A sessão compartilha um provider e orçamento opcionais entre
-explicação, diagnóstico e revisão.
+explicação, diagnóstico, revisão e geração de exercícios.
+
+## Prática adaptativa e exercícios revisados
+
+```bash
+lab practice --data-dir /dados/python-lab --json
+lab practice --review-completed --data-dir /dados/python-lab
+lab exercises draft --topic "listas e funções" --data-dir /dados/python-lab
+lab exercises show ID --data-dir /dados/python-lab
+lab exercises validate ID --yes --data-dir /dados/python-lab
+lab exercises publish ID --yes --data-dir /dados/python-lab
+lab exercises show ID --reference --yes --data-dir /dados/python-lab
+```
+
+Na TUI e no prompt clássico: `/practice [--review-completed]`, `/exercise TEMA`,
+`/exercise-show ID`, `/exercise-validate ID` e `/exercise-publish ID`. O prompt
+clássico exige `--yes` nas operações confirmadas. A TUI sempre abre um modal,
+mesmo se o comando inclui `--yes`; ele mostra operação, caminho e privilégios.
+Cancelar ou Esc no modal preservam o draft e o catálogo. A validação executa a
+referência e os testes gerados com os privilégios do usuário, em cópias temporárias;
+essas cópias não são um sandbox. `/cancel` aguarda a limpeza dos processos antes
+de liberar a próxima ação; um registro de validação cancelada pode permanecer,
+sem autorizar publicação.
+
+`practice` usa apenas missões desbloqueadas e observações de tentativas/pistas:
+a missão ativa vem primeiro, depois tentativas e pistas registradas. Não altera
+progresso, desbloqueia missões nem diagnostica domínio do assunto. Quando existe
+histórico local de erros no workspace selecionado, mostra IDs e metadados da
+mesma missão, sem copiar fontes. A revisão de
+concluídas é uma lista opcional e não reinicia a missão. Prática e drafts salvos
+funcionam sem provider, SDK, chave ou modelo. Gerar um novo draft usa o mesmo
+provider e orçamento de saída da sessão que as outras ações de IA; uma invocação
+externa começa um orçamento novo. Configuração ausente produz mensagem de
+indisponibilidade, sem fabricar um exercício.
+
+Drafts ficam em `<data-dir>/exercise_drafts/ID`. A revisão padrão mostra enunciado,
+starter e testes propostos, com a referência oculta. IDs aceitam letras, números,
+`_` e `-` e resolvem somente nesse store local. Validação técnica e aprovação da
+revisão didática são passos separados: a referência deve passar testes não vazios
+e não pulados, e o starter deve falhar por assertion do contrato. Alterar qualquer
+arquivo do draft invalida a aprovação anterior. `publish --yes` autoriza a revisão
+didática e grava em `<data-dir>/custom_catalog/ID`; não executa código. Reabra o Lab
+para carregar o catálogo composto. IDs, slugs e relações incompatíveis são
+rejeitados antes da inicialização; os arquivos do catálogo instalado são preservados.
+
+Para pedir explicitamente a referência completa, use `/exercise-show ID --reference
+--yes`. A TUI exige confirmação. Essa leitura conta como ajuda nível 4 na missão e
+tentativa capturadas antes da confirmação, sem marcar uma tentativa reiniciada.
+A interface mostra o nível da resposta e a ajuda máxima registrada. Resposta de IA,
+validação técnica e publicação não concluem missão: ainda são necessários plano,
+testes atuais e explicação do aluno. Ajuda completa ou aplicação de patch mantém
+a evidência de competência em prática, mesmo com testes aprovados.
+
+O catálogo selecionado por `build_app(project_root=..., data_dir=...)` é independente
+do workspace `--project` ou `/project` do assistente. Geração envia tema e metadados
+do catálogo, sem selecionar automaticamente fontes do workspace. Explicação e
+revisão enviam apenas os arquivos selecionados. O histórico de conversas persiste
+metadados, caminhos, hashes, níveis e contagens de tokens; não guarda fontes,
+tracebacks, texto completo da resposta ou chave. Eventos de ajuda registram IDs
+locais e identidade da tentativa. Propostas de patch e drafts guardam seu próprio
+material local, incluindo código e referência privados, pois são artefatos para
+revisão. Não faça commit desses dados.
+
+Os templates geram uma estrutura inicial, não uma aplicação completa ou implantada.
+`bot` oferece uma função de eco e CLI locais, sem Telegram/Discord, tokens ou APIs.
+`scraper` extrai o título de HTML local/fixture, sem fetch HTTP. Flask/FastAPI usam
+clientes de teste internos; Django traz settings e verificação inicial. Geração é
+offline e não instala dependências nem executa código; preserve destinos existentes
+e siga o README gerado para instalar e executar explicitamente.
+
+A avaliação determinística e a avaliação opcional de modelo real estão separadas
+em [docs/evaluations/tutor-scenarios.md](docs/evaluations/tutor-scenarios.md).
 
 ## Ajuda e evidências
 
@@ -233,7 +304,7 @@ No Windows, use `.venv\Scripts\python.exe` e `.venv\Scripts\lab.exe`. `constrain
 
 O workflow primeiro prova ajuda, versão e missão clássica sem extras; depois instala os extras opcionais de análise e SDK oficial sob as constraints e roda provas offline com mocks. A existência do workflow não confirma uma execução: os resultados de cada célula dependem do CI. Não é necessário instalar SDK de assistente para ajuda, versão, missões, prática clássica ou `check`.
 
-Os scaffolds curados `cli` e `fastapi` estão disponíveis pela API
+Os sete scaffolds curados `cli`, `fastapi`, `flask`, `django`, `library`, `bot` e `scraper` estão disponíveis pela API
 `ScaffoldService().create(template, Path(destino))`, em `python_lab.scaffolding`.
 O destino deve ser inexistente e ter nome Python válido (hífens viram underscores
 no pacote). Nomes que conflitam com módulos da biblioteca padrão ou com as
@@ -255,6 +326,8 @@ No PowerShell, defina `$env:PYTHON_LAB_TEMPLATE_SMOKE = "1"` e use
 `.venv\Scripts\python.exe -m pytest tests/test_template_smoke.py -q -s`.
 O CI executa esse estágio separado com `constraints/template-smoke.txt`, sem
 adicionar dependências de framework ao runtime obrigatório do Lab. Os smokes
-verificam a saudação CLI e `GET /health` com cliente interno, sem chaves ou
-requisições externas após a instalação. A execução independente de um wheel do
+verificam saudações, clientes internos FastAPI/Flask, settings Django, biblioteca,
+bot local e fixture HTML, sem chaves ou requisições externas após a instalação.
+São nove venvs independentes: os sete templates e duas regressões de tokens
+literais nos nomes CLI/FastAPI. A execução independente de um wheel do
 Lab ainda não é coberta: o catálogo de missões exige o checkout editável.

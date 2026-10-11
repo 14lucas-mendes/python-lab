@@ -35,6 +35,11 @@ Digite / para abrir a lista de comandos.
 /apply <id>  Confirmar diff e aplicar
 /verify <id> --check ast|ruff|pytest Verificação explícita
 /new <template> <nome> --path <pai> Criar projeto
+/practice    Sugestões por observações; somente leitura
+/exercise <tema> Gerar draft privado para revisão
+/exercise-show <id> Consultar draft, referência oculta
+/exercise-validate <id> Confirmar execução com seus privilégios
+/exercise-publish <id> Aprovar revisão e publicação local
 /cancel      Cancelar ação em curso
 /help        Mostrar esta ajuda
 /exit        Salvar e encerrar

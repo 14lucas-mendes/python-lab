@@ -29,7 +29,9 @@ from python_lab.analysis.service import AnalysisService
 from python_lab.workspace import Workspace
 from python_lab.app import ActiveMissionError, ApplicationError, PythonLabApp
 from python_lab.commands import COMMANDS, DEFAULT_SUMMARIES, CommandDispatcher, CommandResult, parse_command
-from python_lab.catalog import CatalogError, load_goal, load_missions, load_roadmap, load_skills
+from python_lab.catalog import CatalogError, load_catalog, load_goal, load_roadmap, load_skills
+from python_lab.learning_commands import LEARNING_ACTIONS, LearningCommands
+from python_lab.exercises.service import ExerciseService
 from python_lab.learning import CompletionError, HintError, LearningError
 from python_lab.progress import ProgressError, ProgressRepository
 from python_lab.presentation import encoding_safe_console, test_feedback
@@ -42,7 +44,8 @@ from python_lab.tui.app import PythonLabTUI
 
 
 ASSISTANT_ACTIONS = {"/check", "/explain-code", "/diagnose", "/review", "/apply", "/verify", "/new"}
-EXTERNAL_ACTIONS = {"explain", "diagnose", "check", "review", "apply", "verify", "new"}
+EXTERNAL_ACTIONS = {"explain", "diagnose", "check", "review", "apply", "verify", "new", "practice", "exercises"}
+ASYNC_ACTIONS = ASSISTANT_ACTIONS | LEARNING_ACTIONS
 
 
 SKILL_LABELS = {
@@ -137,6 +140,7 @@ class PythonLabCLI:
         self._classic_loop = None
         self._classic_thread = None
         self._classic_action = None
+        self.learning = None
         self.handlers = {
             "/goal": self.show_goal,
             "/skills": self.show_skills,
@@ -158,10 +162,26 @@ class PythonLabCLI:
         self.dispatcher = CommandDispatcher()
         for name, handler in self.handlers.items():
             self.dispatcher.register(name, self._adapt_handler(handler))
-        for name in ASSISTANT_ACTIONS:
+        self.dispatcher.register("/practice", lambda args: self.learning_handlers().practice(args))
+        for name in ASYNC_ACTIONS:
             async def action(args, name=name):
-                return await self.assistant_handlers().actions()[name](args)
+                return await self.action_handlers(name).actions()[name](args)
             self.dispatcher.register_async(name, action)
+
+    def learning_handlers(self):
+        if self.learning is None:
+            data_dir = getattr(self.assistant_runtime, "data_dir", self.app.repository.path.parent)
+            self.learning = LearningCommands(self.app, None, ExerciseService(
+                data_dir, ProcessRunner(), catalog_dir=self.app.project_root),
+                provider_factory=lambda: self.assistant_runtime.get_service().provider,
+                workspace=self.assistant_project or self.app.project_root,
+                mode=self.effective_assistant_mode())
+        self.learning.workspace = self.assistant_project or self.app.project_root
+        self.learning.mode = self.effective_assistant_mode()
+        return self.learning
+
+    def action_handlers(self, name, *, service=None):
+        return self.learning_handlers() if name in LEARNING_ACTIONS else self.assistant_handlers(service=service)
 
     def assistant_handlers(self, *, service=None):
         data_dir = getattr(self.assistant_runtime, "data_dir", self.app.repository.path.parent)
@@ -188,7 +208,7 @@ class PythonLabCLI:
         command = parsed.name
         if command in {"/project", "/mode"}:
             return self._local_assistant_setting(command, parsed.args)
-        if command in ASSISTANT_ACTIONS:
+        if command in ASYNC_ACTIONS:
             return self._execute_assistant(parsed)
         if command == "/cancel":
             self.cancel_classic_action()
@@ -208,6 +228,8 @@ class PythonLabCLI:
             self.console.print(result.message, markup=False)
             self._record(display, "Comando desconhecido")
         elif not result.exit_requested:
+            if command == "/practice":
+                self.console.print(result.message, markup=False)
             self._record(display, result.message)
             if command != "/status":
                 self._print_next_step()
@@ -244,7 +266,7 @@ class PythonLabCLI:
 
     def _execute_assistant(self, parsed) -> bool:
         try:
-            handlers = self.assistant_handlers()
+            handlers = self.action_handlers(parsed.name)
             if self._runner is None:
                 self._runner = asyncio.Runner()
             handler = handlers.actions()[parsed.name]
@@ -283,7 +305,7 @@ class PythonLabCLI:
             self.console.print("Ação em curso; use /cancel.", markup=False)
             return
         self._ensure_classic_loop()
-        handlers = self.assistant_handlers()
+        handlers = self.action_handlers(parsed.name)
         action = handlers.actions()[parsed.name]
         cancel = threading.Event()
         done = threading.Event()
@@ -554,6 +576,7 @@ class PythonLabCLI:
                     f"Tentativas: {progress.attempts}",
                     f"Testes: {tests_status}",
                     f"Pistas: {progress.hints_revealed}",
+                    f"Ajuda máxima: nível {progress.max_assistance_level}",
                     f"Plano: {'registrado' if snapshot.plan_complete else 'pendente'}",
                     f"Explicação: {'registrada' if progress.explanation else 'pendente'}",
                 ]
@@ -703,7 +726,7 @@ def build_app(project_root: Path | None = None, *, data_dir: Path | None = None)
             raise ProgressError(
                 f"Estado JSON legado encontrado. Execute lab migrate --from-dir {legacy} --data-dir {paths.data_dir}"
             )
-    missions = load_missions(root / "missions")
+    missions = load_catalog(root, paths.data_dir / "custom_catalog")
     try:
         app = PythonLabApp(
             goal=load_goal(root / "data" / "goal.json"),
@@ -742,8 +765,11 @@ def _argument_parser() -> argparse.ArgumentParser:
     parser.add_argument("--json", action="store_true", help="Resultado estruturado schema_version=1")
     parser.add_argument("--traceback", type=Path)
     parser.add_argument("--file", action="append", type=Path, default=[])
-    parser.add_argument("--yes", action="store_true", help="Confirmar aplicação do diff")
+    parser.add_argument("--yes", action="store_true", help="Confirmar aplicação, execução gerada ou publicação da ação selecionada")
     parser.add_argument("--check", action="append", choices=("ast", "ruff", "pytest"), default=[])
+    parser.add_argument("--topic", help="Tema do draft de exercício")
+    parser.add_argument("--reference", action="store_true", help="Solicitar referência completa nível 4")
+    parser.add_argument("--review-completed", action="store_true", help="Incluir revisão opcional de concluídas")
     parser.add_argument("--path", type=Path, help="Diretório pai para novo projeto")
     parser.add_argument("command", nargs="?", choices=("migrate", *sorted(EXTERNAL_ACTIONS)))
     parser.add_argument("files", nargs="*")
@@ -780,7 +806,7 @@ def _run_classic(app: PythonLabApp, session_log: SessionLog | None, console: Con
                 else:
                     console.print("Ação em curso; use /cancel.", markup=False)
                 continue
-            if parsed.name in ASSISTANT_ACTIONS:
+            if parsed.name in ASYNC_ACTIONS:
                 try:
                     cli.start_classic_assistant(parsed)
                 except (ContextError, AssistantError) as exc:
@@ -832,6 +858,8 @@ def main(argv: Sequence[str] | None = None) -> int:
             return 2
     else:
         args = _argument_parser().parse_intermixed_args(raw)
+    if args.command in {"practice", "exercises"}:
+        return _run_external_learning(args)
     if args.command in EXTERNAL_ACTIONS:
         return _run_external_assistant(args)
     console = encoding_safe_console(Console())
@@ -879,6 +907,8 @@ def _run_external_assistant(args) -> int:
     action = args.command
     runtime = None
     try:
+        if args.topic or args.reference or args.review_completed:
+            raise ValueError("Opções de aprendizado requerem practice ou exercises.")
         catalog = Path(__file__).resolve().parent.parent
         data_dir = resolve_paths(catalog, args.data_dir).data_dir
         workspace = Workspace(args.project or Path.cwd())
@@ -919,6 +949,63 @@ def _run_external_assistant(args) -> int:
     if args.json:
         print(json.dumps({"schema_version": 1, "action": action, "ok": result.ok,
                           "message": result.message, "data": result.data}, ensure_ascii=False))
+    else:
+        encoding_safe_console(Console()).print(result.message, markup=False)
+    return code
+
+
+def _run_external_learning(args) -> int:
+    """Adapt argparse to the same learning dispatcher without selecting a model."""
+    action = args.command
+    runtime = None
+    try:
+        if args.file or args.traceback or args.level or args.check or args.path:
+            raise ValueError('Opção incompatível com prática/exercícios.')
+        app = build_app(data_dir=args.data_dir)
+        runtime = AssistantRuntime(app.repository.path.parent, app)
+        commands = LearningCommands(app, None, ExerciseService(
+            app.repository.path.parent, ProcessRunner(), catalog_dir=app.project_root),
+            provider_factory=lambda: runtime.get_service().provider,
+            workspace=args.project or app.project_root, mode=args.mode)
+        if action == 'practice':
+            if args.files or args.topic or args.reference or args.yes:
+                raise ValueError('Uso: lab practice [--review-completed].')
+            command = parse_command('/practice')
+            if args.review_completed:
+                from python_lab.commands import Command
+                command = Command('/practice', ('--review-completed',))
+        else:
+            from python_lab.commands import Command
+            if args.review_completed or not args.files:
+                raise ValueError('Uso: lab exercises draft --topic TEXT | validate ID --yes | publish ID --yes | show ID [--reference --yes].')
+            operation, *identities = args.files
+            if operation == 'draft':
+                if identities or not args.topic or args.yes or args.reference:
+                    raise ValueError('Uso: lab exercises draft --topic TEXT.')
+                command = Command('/exercise', (args.topic,))
+            elif operation in {'validate', 'publish', 'show'}:
+                if len(identities) != 1 or args.topic or (args.reference and operation != 'show'):
+                    raise ValueError(f'Uso: lab exercises {operation} ID [--yes].')
+                flags = (('--reference',) if args.reference else ()) + (('--yes',) if args.yes else ())
+                command = Command('/exercise-' + operation, (*identities, *flags))
+            else:
+                raise ValueError('Operação de exercício desconhecida; use draft, validate, publish ou show.')
+        dispatcher = CommandDispatcher()
+        commands.register(dispatcher)
+        async def run():
+            try:
+                return await dispatcher.dispatch_async(command)
+            finally:
+                await runtime.aclose()
+        result = asyncio.run(run())
+    except (ValueError, AssistantError, CatalogError, ApplicationError) as exc:
+        result = CommandResult(False, str(exc), {'error_kind': 'usage'})
+    except (OSError, ProgressError, SessionError) as exc:
+        result = CommandResult(False, str(exc), {'error_kind': 'execution'})
+    code = 0 if result.ok else (2 if result.data.get('error_kind') == 'usage' else 1)
+    if args.json:
+        print(json.dumps({'schema_version': 1, 'action': action, 'ok': result.ok,
+                          'message': result.message, 'data': result.data}, ensure_ascii=False))
     else:
         encoding_safe_console(Console()).print(result.message, markup=False)
     return code

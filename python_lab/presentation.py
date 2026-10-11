@@ -77,3 +77,16 @@ def encoding_safe_console(console: "Console") -> "Console":
     if not isinstance(stream, _EncodingSafeWriter) and getattr(stream, "encoding", None):
         console.file = _EncodingSafeWriter(stream)
     return console
+
+
+def practice_feedback(snapshot: PracticeSnapshot) -> str:
+    lines = ['Prática sugerida pelas observações registradas; não é aprovação de competência.']
+    for item in snapshot.recommendations:
+        lines.append(f'{item.mission_id} · {item.reason} Skills: {", ".join(item.skills)}')
+    if not snapshot.recommendations:
+        lines.append('Nenhuma missão desbloqueada pendente.')
+    for item in snapshot.completed_review:
+        lines.append(f'{item.mission_id} · {item.reason}')
+    for reference in snapshot.error_history:
+        lines.append(f'Histórico local: {reference.request_id} · missão {reference.mission_id} · {reference.action} · {reference.workspace}')
+    return '\n'.join(lines)

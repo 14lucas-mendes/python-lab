@@ -18,6 +18,7 @@ from textual.worker import Worker, WorkerCancelled, WorkerFailed, get_current_wo
 
 from python_lab.app import ApplicationError, PythonLabApp
 from python_lab.assistant.errors import ContextError
+from python_lab.learning_commands import LEARNING_ACTIONS
 from python_lab.assistant.service import AssistantService
 from python_lab.workspace import Workspace
 from python_lab.commands import ALIASES, COMMANDS, parse_command
@@ -298,7 +299,7 @@ class PythonLabTUI(App[None]):
             self._flush_console()
             self._refresh_status()
             return
-        if command in {"/explain-code", "/diagnose", "/check", "/review", "/apply", "/verify", "/new"}:
+        if command in LEARNING_ACTIONS | {"/explain-code", "/diagnose", "/check", "/review", "/apply", "/verify", "/new"}:
             self._start_assistant(command, parse_command(stripped).args)
             return
         if command in {"/mission", "/concepts"}:
@@ -338,8 +339,11 @@ class PythonLabTUI(App[None]):
             self.exit()
 
     def _start_assistant(self, command: str, args: tuple[str, ...]) -> None:
+        if self._testing:
+            self._append_response("Testes em execução; aguarde a limpeza antes de outra ação.")
+            return
         try:
-            handlers = self.cli.assistant_handlers(service=self.assistant_service)
+            handlers = self.cli.action_handlers(command, service=self.assistant_service)
         except ContextError as exc:
             self._append_response(str(exc))
             return
@@ -356,10 +360,10 @@ class PythonLabTUI(App[None]):
         async def run():
             result = None
             try:
-                if command == "/apply":
+                if command in {"/apply", "/exercise-validate", "/exercise-publish", "/exercise-show"}:
                     async def confirm(preview):
                         decision = asyncio.get_running_loop().create_future()
-                        modal = ConfirmScreen("Aplicar esta proposta?", diff=preview.message)
+                        modal = ConfirmScreen("Confirmar operação explícita?", diff=preview.message)
                         def chosen(value):
                             if not decision.done():
                                 decision.set_result(bool(value))
@@ -369,7 +373,7 @@ class PythonLabTUI(App[None]):
                         finally:
                             if self.screen_stack and self.screen is modal:
                                 modal.dismiss(False)
-                    result = await handlers.apply(args, cancel=cancel, confirm=confirm)
+                    result = await action(args, cancel=cancel, confirm=confirm)
                 else:
                     result = await action(args, cancel=cancel)
             except asyncio.CancelledError:
@@ -687,6 +691,8 @@ class PythonLabTUI(App[None]):
             progress = self.lab.current_progress()
             plan_done = snapshot.plan_complete
             current_tests = snapshot.tests_current
+            header += f" · Ajuda máxima: nível {progress.max_assistance_level}"
+            shell.query_one("#mission-header", Static).update(header)
             stages = "   ".join(
                 f"[{'x' if done else ' '}] {label}" for done, label in (
                     (plan_done, "Plano"), (current_tests, "Testes atuais"),
