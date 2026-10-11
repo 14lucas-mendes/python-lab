@@ -1,6 +1,7 @@
 """Metadata-only, workspace-bound assistant conversation history."""
 
-from dataclasses import asdict
+from contextlib import closing
+from dataclasses import asdict, dataclass
 from datetime import datetime, timezone
 import hashlib
 import json
@@ -13,9 +14,44 @@ from python_lab.assistant.models import AssistantAnswer, AssistantRequest
 from python_lab.storage.database import connection
 
 
+@dataclass(frozen=True)
+class ConversationReference:
+    request_id: str
+    workspace: Path
+    mission_id: str | None
+    created_at: str
+    action: str
+
+
 class ConversationRepository:
     def __init__(self, database_path: Path):
         self.database_path = Path(database_path)
+
+    def error_references(self, workspace: Path, *, mission_id: str | None) -> tuple[ConversationReference, ...]:
+        """Read local error metadata for exactly one workspace/mission scope.
+
+        A diagnose request or an explicitly supplied traceback is an observed
+        error-related conversation, not proof that the mission's tests failed.
+        Avoid the writable connection helper: this read must not create or
+        migrate a database, nor fetch source, prompt, traceback or answer data.
+        """
+        try:
+            if not self.database_path.exists():
+                return ()
+            root = Path(workspace).resolve()
+            uri = self.database_path.resolve().as_uri() + "?mode=ro"
+            with closing(sqlite3.connect(uri, uri=True, timeout=5)) as db:
+                if db.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='conversations'").fetchone() is None:
+                    return ()
+                rows = db.execute("""SELECT request_id, workspace, mission_id, created_at, action
+                    FROM conversations
+                    WHERE workspace=? AND mission_id IS ?
+                        AND (action='diagnose' OR traceback_sha256 IS NOT NULL)
+                    ORDER BY created_at, request_id""", (str(root), mission_id)).fetchall()
+            return tuple(ConversationReference(identity, Path(scope), mission, timestamp, action)
+                         for identity, scope, mission, timestamp, action in rows)
+        except (sqlite3.Error, OSError, ValueError, RuntimeError) as exc:
+            raise AssistantError(f"Não foi possível consultar o histórico de assistência: {exc}") from exc
 
     def append(self, request: AssistantRequest, answer: AssistantAnswer, *, request_id: str | None = None) -> str:
         identity = request_id if request_id is not None else uuid4().hex
