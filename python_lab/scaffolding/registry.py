@@ -13,6 +13,7 @@ TEMPLATES: dict[str, tuple[str, ...]] = {
     "cli": _FILES,
     "fastapi": _FILES,
     "flask": _FILES,
+    "library": _FILES,
     "django": (*_FILES, "src/__package__/settings.py"),
 }
 
@@ -31,6 +32,7 @@ _COMMON_DEPENDENCIES = {
 }
 DEPENDENCY_NAMES: dict[str, dict[str, str]] = {
     "cli": dict(_COMMON_DEPENDENCIES),
+    "library": dict(_COMMON_DEPENDENCIES),
     "django": {
         **_COMMON_DEPENDENCIES,
         "django": "django",

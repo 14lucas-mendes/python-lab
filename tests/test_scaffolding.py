@@ -12,9 +12,9 @@ import pytest
 from python_lab.assistant.errors import AssistantError
 
 
-ADDITIONAL_TEMPLATES = ["flask", "django"]
-README_COMMANDS = {"flask": "-m flask --app example_app.main:app run", "django": "-m example_app.main"}
-CONTRACT_MARKERS = {"flask": "/health", "django": "/health"}
+ADDITIONAL_TEMPLATES = ["flask", "django", "library"]
+README_COMMANDS = {"flask": "-m flask --app example_app.main:app run", "django": "-m example_app.main", "library": "from example_app.main import greet; print(greet('Ana'))"}
+CONTRACT_MARKERS = {"flask": "/health", "django": "/health", "library": "Olá, Ana!"}
 
 
 def scaffold_api():
@@ -428,3 +428,14 @@ def test_django_collisions_precede_resource_reads_and_target_creation(tmp_path, 
     with pytest.raises(AssistantError, match="[Cc]onflit"):
         Service().create("django", tmp_path / name)
     assert list(tmp_path.iterdir()) == []
+
+
+def test_library_typed_example_has_no_runtime_dependency(tmp_path):
+    _, Service, _ = scaffold_api()
+    result = Service().create("library", tmp_path / "example")
+    manifest = tomllib.loads((result.target / "pyproject.toml").read_text(encoding="utf-8"))
+    assert manifest["project"]["dependencies"] == []
+    source = (result.target / "src/example/main.py").read_text(encoding="utf-8")
+    assert "def greet(name: str) -> str:" in source
+    # A Flask dependency collision should remain usable by a standard-library template.
+    assert Service().create("library", tmp_path / "flask").target.is_dir()

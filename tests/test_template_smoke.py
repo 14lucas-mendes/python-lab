@@ -39,6 +39,7 @@ def run(command, cwd, *, timeout=180):
     pytest.param("fastapi", "fastapi-app", id="fastapi"),
     pytest.param("flask", "flask-app", id="flask"),
     pytest.param("django", "django-app", id="django"),
+    pytest.param("library", "library-app", id="library"),
     pytest.param("cli", "app-__distribution__x", id="cli_literal_token"),
     pytest.param("fastapi", "app-__distribution__x", id="fastapi_literal_token"),
 ])
@@ -97,8 +98,13 @@ def test_generated_project_in_clean_venv(tmp_path, template, project_name):
             "assert response.json() == {'status': 'ok'}; print(response.status_code, response.json())",
         ], target)
         assert "200 {'status': 'ok'}" in request.stdout
-        # Exercise the documented entrypoint without starting a server.
+        # Check generated Django settings without starting a server.
         run([python, "-m", "django", "check", "--settings", f"{package}.settings"], target)
+    elif template == "library":
+        example = run([
+            python, "-c", f"from {package}.main import greet; print(greet('Ana'))",
+        ], target)
+        assert example.stdout == "Olá, Ana!\n"
     run([
         python, "-c",
         "from importlib.metadata import distributions; from packaging.specifiers import SpecifierSet; "
