@@ -168,20 +168,21 @@ class PythonLabCLI:
                 return await self.action_handlers(name).actions()[name](args)
             self.dispatcher.register_async(name, action)
 
-    def learning_handlers(self):
+    def learning_handlers(self, *, service=None):
         if self.learning is None:
             data_dir = getattr(self.assistant_runtime, "data_dir", self.app.repository.path.parent)
             self.learning = LearningCommands(self.app, None, ExerciseService(
                 data_dir, ProcessRunner(), catalog_dir=self.app.project_root),
-                provider_factory=lambda: self.assistant_runtime.get_service().provider,
                 workspace=self.assistant_project or self.app.project_root,
                 mode=self.effective_assistant_mode())
+        self.learning.provider_factory = lambda: (service.provider if service is not None
+                                                   else self.assistant_runtime.get_service().provider)
         self.learning.workspace = self.assistant_project or self.app.project_root
         self.learning.mode = self.effective_assistant_mode()
         return self.learning
 
     def action_handlers(self, name, *, service=None):
-        return self.learning_handlers() if name in LEARNING_ACTIONS else self.assistant_handlers(service=service)
+        return self.learning_handlers(service=service) if name in LEARNING_ACTIONS else self.assistant_handlers(service=service)
 
     def assistant_handlers(self, *, service=None):
         data_dir = getattr(self.assistant_runtime, "data_dir", self.app.repository.path.parent)
