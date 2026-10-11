@@ -78,7 +78,8 @@ def test_invalid_mission_never_saves(tmp_path, field, value):
     assert not (tmp_path / 'state' / 'exercise_drafts' / draft.id).exists()
 
 
-@pytest.mark.parametrize('field,value', [('briefing', '\ud800'), ('tests', ''), ('starter', 'x' * 262145)])
+@pytest.mark.parametrize('field,value', [('briefing', '\ud800'), ('tests', ''), ('starter', 'x' * 262145)],
+                         ids=['invalid-utf8', 'empty-tests', 'oversize-starter'])
 def test_text_is_strict_utf8_and_bounded(tmp_path, field, value):
     with pytest.raises(AssistantError):
         service(tmp_path).save_draft(replace(sample_draft(), **{field: value}))
