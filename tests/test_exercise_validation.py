@@ -339,3 +339,35 @@ def test_explicit_validation_selection_overrides_ordinary_solution_environment(t
     svc = service(tmp_path)
     path = svc.save_draft(sample_draft())
     assert svc.validate(path, execution_confirmed=True).passed
+
+
+def test_published_runner_tolerates_same_harness_loaded_as_plugin_alias(tmp_path, monkeypatch):
+    """Windows junction aliases can register the same conftest source twice."""
+    import os
+    from python_lab.test_runner import run_tests
+    monkeypatch.delenv('PYTHON_LAB_SOLUTION', raising=False)
+    svc = service(tmp_path)
+    draft = sample_draft()
+    path = svc.save_draft(draft)
+    assert svc.validate(path, execution_confirmed=True).passed
+    published = svc.publish(path, ROOT, approved=True)
+    conftest = published / 'tests' / 'conftest.py'
+    alias = tmp_path / 'duplicate_exercise_harness.py'
+    alias.write_text('import runpy\nglobals().update(runpy.run_path(' + repr(str(conftest)) + '))\n', encoding='utf-8')
+    # Real subprocess loads the actual saved conftest source first through this
+    # distinct plugin identity, then again through its ordinary catalog path.
+    monkeypatch.setenv('PYTEST_PLUGINS', 'duplicate_exercise_harness')
+    monkeypatch.setenv('PYTHONPATH', str(tmp_path) + os.pathsep + os.getenv('PYTHONPATH', ''))
+    correct = tmp_path / 'correct.py'
+    correct.write_text(draft.reference, encoding='utf-8')
+    result = run_tests(published / 'tests', ROOT, solution_path=correct)
+    assert result.passed and result.return_code == 0, result.output
+    default = run_tests(published / 'tests', ROOT)
+    assert not default.passed and default.return_code == 1, default.output
+    assert '2 falho(s)' in default.summary
+    assert 'already added' not in default.output
+    (published / 'tests' / 'test_exercise.py').write_text(
+        'raise RuntimeError("genuine collection defect")\n', encoding='utf-8')
+    broken = run_tests(published / 'tests', ROOT, solution_path=correct)
+    assert not broken.passed and broken.return_code == 2, broken.output
+    assert 'genuine collection defect' in broken.output

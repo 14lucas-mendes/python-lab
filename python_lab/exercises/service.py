@@ -23,37 +23,41 @@ from python_lab.exercises.models import (DraftValidation, ExerciseDraft, MAX_DRA
                                          identifier, mission_payload, validate_draft)
 from python_lab.runtime.processes import ProcessCleanupError, ProcessRunner
 
-_CONFTEXT = '''import json
-import os
+_CONFTEXT = '''import os
 from pathlib import Path
 import pytest
 from python_lab.solution_loader import load_solution
 
-_reports = []
-
-def pytest_addoption(parser):
-    parser.addoption("--lab-solution", choices=["starter.py", "reference_solution.py"])
-    parser.addoption("--lab-evidence")
-
 @pytest.fixture
 def solution(request):
     mission = Path(__file__).parent.parent
-    selected = request.config.getoption("--lab-solution")
+    selected = getattr(request.config, "_python_lab_validation_solution", None)
     configured = os.environ.get("PYTHON_LAB_SOLUTION")
     path = mission / selected if selected else Path(configured) if configured else mission / "starter.py"
     return load_solution(path)
+'''
 
-@pytest.hookimpl(hookwrapper=True)
-def pytest_runtest_makereport(item, call):
-    result = yield
-    report = result.get_result()
-    _reports.append({"phase": report.when, "outcome": report.outcome,
-                     "assertion": call.excinfo is not None and call.excinfo.type is AssertionError})
+_VALIDATION_PLUGIN = '''import json
+from pathlib import Path
 
-def pytest_sessionfinish(session, exitstatus):
-    evidence = session.config.getoption("--lab-evidence")
-    if evidence:
-        Path(evidence).write_text(json.dumps(_reports), encoding="utf-8")
+class ExerciseValidationPlugin:
+    def __init__(self, selected, evidence):
+        self.selected = selected
+        self.evidence = Path(evidence)
+        self.reports = []
+
+    def pytest_configure(self, config):
+        config._python_lab_validation_solution = self.selected
+
+    @pytest.hookimpl(hookwrapper=True)
+    def pytest_runtest_makereport(self, item, call):
+        result = yield
+        report = result.get_result()
+        self.reports.append({"phase": report.when, "outcome": report.outcome,
+                             "assertion": call.excinfo is not None and call.excinfo.type is AssertionError})
+
+    def pytest_sessionfinish(self, session, exitstatus):
+        self.evidence.write_text(json.dumps(self.reports), encoding="utf-8")
 '''
 _FILES = {'draft.json', 'mission.json', 'README.md', 'criteria.json', 'starter.py',
           'reference_solution.py', 'hints.json', 'tests/conftest.py', 'tests/test_exercise.py'}
@@ -266,11 +270,15 @@ class ExerciseService:
         # Fixed invocation, explicit fixture selection, isolated config and cache.
         args = [str(stage / 'tests'), '-q', '-c', str(stage / 'pytest.ini'),
                 '--confcutdir', str(stage), '-p', 'no:cacheprovider',
-                '--basetemp', str(stage / f'{selected}-tmp'), '--junitxml', str(report),
-                '--lab-solution', selected, '--lab-evidence', str(evidence)]
+                '--basetemp', str(stage / f'{selected}-tmp'), '--junitxml', str(report)]
+        # One trusted programmatic plugin owns selection and assertion evidence.
+        # The published fixture has no global option-registration hooks, so
+        # equivalent conftest aliases cannot collide on private CLI options.
         script = ('import os, sys; sys.dont_write_bytecode=True; '
                   'os.environ["PYTEST_DISABLE_PLUGIN_AUTOLOAD"]="1"; '
-                  'import pytest; sys.exit(pytest.main(' + repr(args) + '))')
+                  'import pytest\n' + _VALIDATION_PLUGIN + '\n'
+                  'sys.exit(pytest.main(' + repr(args) + ', plugins=[ExerciseValidationPlugin('
+                  + repr(selected) + ', ' + repr(str(evidence)) + ')]))')
         try:
             completed = self.runner.run([sys.executable, '-I', '-c', script], cwd=stage,
                                         timeout=30.0, output_limit=1048576, cancel=cancel)
