@@ -74,7 +74,7 @@ def test_open_sessions_survive_closed_retention(tmp_path):
         closed.close()
     sessions = SessionLog(path).load()
     assert sum(session["ended_at"] is None for session in sessions) == len(open_logs)
-    assert sum(session["ended_at"] is not None for session in sessions) == MAX_SESSIONS
+    assert sum(session["ended_at"] is not None for session in sessions) == 0
     open_logs[0].record("/status", "still open")
     assert open_logs[0].current_events()[0]["summary"] == "still open"
 

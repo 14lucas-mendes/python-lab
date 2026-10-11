@@ -34,12 +34,14 @@ class AssistantService:
         self.capture_attempt = capture_attempt or getattr(owner, "capture_assistance_attempt", None)
         self.policy = TutorPolicy()
 
-    async def execute(self, request: AssistantRequest, *, cancel: threading.Event | None = None) -> AssistantAnswer:
+    async def execute(self, request: AssistantRequest, *, cancel: threading.Event | None = None,
+                      attempt_id: str | None = None) -> AssistantAnswer:
         # Freeze the local request identity and context before asynchronous work.
         request_id = uuid4().hex
         captured = request
         try:
-            attempt_id = self.capture_attempt(captured.mission_id) if self.capture_attempt else None
+            if attempt_id is None and captured.mission_id is not None:
+                attempt_id = self.capture_attempt(captured.mission_id) if self.capture_attempt else None
         except Exception as exc:
             raise AssistantError(f"Não foi possível capturar a tentativa da missão: {exc}") from exc
         action_cancel = cancel if cancel is not None else threading.Event()

@@ -5,7 +5,7 @@ copies, limits and process cleanup are safeguards, not a security sandbox.
 """
 import ast
 from contextlib import closing, contextmanager
-from dataclasses import asdict
+from dataclasses import asdict, replace
 import hashlib
 import json
 import os
@@ -246,26 +246,26 @@ class ExerciseService:
             return False
 
     def _run_captured(self, draft_path: Path, files: dict[str, bytes], selected: str,
-                      cancel: threading.Event | None) -> tuple[bool, bool, bool]:
+                      cancel: threading.Event | None) -> tuple[bool, bool, bool, bool]:
         # Each selection gets a newly allocated copy. The previous process and
         # its temporary tree have been cleaned up before another selection runs.
         with self._external_temp(draft_path, cancel) as stage:
             if stage is None:
-                return False, False, True
+                return False, False, True, False
             (stage / 'tests').mkdir()
             material = {**files, 'pytest.ini': b'[pytest]\n'}
             for name, content in material.items():
                 (stage / name).write_bytes(content)
             if not self._execution_unchanged(stage, material):
-                return False, False, cancel is not None and cancel.is_set()
-            success, failure, cancelled = self._run(stage, selected, cancel)
+                return False, False, cancel is not None and cancel.is_set(), False
+            success, failure, cancelled, truncated = self._run(stage, selected, cancel)
             # ProcessRunner has completed descendant/reader cleanup. A result
             # from modified code, tests or selection/evidence hooks is invalid.
             if not self._execution_unchanged(stage, material):
-                return False, False, cancelled
-            return success, failure, cancelled
+                return False, False, cancelled, truncated
+            return success, failure, cancelled, truncated
 
-    def _run(self, stage: Path, selected: str, cancel: threading.Event | None) -> tuple[bool, bool, bool]:
+    def _run(self, stage: Path, selected: str, cancel: threading.Event | None) -> tuple[bool, bool, bool, bool]:
         report, evidence = stage / f'{selected}.xml', stage / f'{selected}.json'
         # Fixed invocation, explicit fixture selection, isolated config and cache.
         args = [str(stage / 'tests'), '-q', '-c', str(stage / 'pytest.ini'),
@@ -285,10 +285,11 @@ class ExerciseService:
         except ProcessCleanupError:
             raise
         except OSError:
-            return False, False, False
+            return False, False, False, False
         cancelled = completed.cancelled or (cancel is not None and cancel.is_set())
-        if cancelled or completed.timed_out or completed.truncated:
-            return False, False, cancelled
+        truncated = completed.truncated
+        if cancelled or completed.timed_out:
+            return False, False, cancelled, truncated
         try:
             root = ET.parse(report).getroot()
             cases = list(root.iter('testcase'))
@@ -304,9 +305,9 @@ class ExerciseService:
             contract_failure = completed.return_code == 1 and not rejected and bool(failures) and all(
                 item['phase'] == 'call' and item['assertion'] is True for item in failures
             ) and any(case.find('failure') is not None for case in cases)
-            return success, contract_failure, False
+            return success, contract_failure, False, truncated
         except (OSError, ValueError, TypeError, KeyError, ET.ParseError):
-            return False, False, False
+            return False, False, False, truncated
 
     def validate(self, draft_path: Path, *, execution_confirmed: bool,
                  cancel: threading.Event | None = None) -> DraftValidation:
@@ -326,15 +327,18 @@ class ExerciseService:
             except (SyntaxError, ValueError):
                 result = DraftValidation(False, fingerprint, 'Sintaxe inválida; não é falha do contrato.')
             else:
-                reference_pass, _, cancelled = self._run_captured(path, files, 'reference_solution.py', cancel)
+                reference_pass, _, cancelled, truncated = self._run_captured(path, files, 'reference_solution.py', cancel)
                 starter_failure = False
                 if reference_pass and not cancelled:
-                    _, starter_failure, cancelled = self._run_captured(path, files, 'starter.py', cancel)
+                    _, starter_failure, cancelled, starter_truncated = self._run_captured(path, files, 'starter.py', cancel)
+                    truncated = truncated or starter_truncated
                 result = DraftValidation(reference_pass and starter_failure and not cancelled, fingerprint,
                     'Referência aprovada; starter falha por assert do contrato. Revisão didática ainda necessária.'
                     if reference_pass and starter_failure and not cancelled else
                     'Suite inválida, referência reprovada, starter sem falha de contrato ou material executado alterado.',
                     cancelled)
+                if truncated:
+                    result = replace(result, detail=result.detail + ' Saída de console truncada.')
         # Hash before and after execution: code cannot change review material and
         # retain a successful validation; cleanup completed before this point.
         if self._read(path)[2] != fingerprint:

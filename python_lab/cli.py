@@ -8,6 +8,7 @@ import sqlite3
 import sys
 import threading
 from pathlib import Path
+from uuid import uuid4
 from typing import Sequence
 
 from rich.console import Console
@@ -271,9 +272,10 @@ class PythonLabCLI:
             if self._runner is None:
                 self._runner = asyncio.Runner()
             handler = handlers.actions()[parsed.name]
+            action_id = uuid4().hex
             result = self._runner.run(handler(parsed.args))
             self.console.print(result.message, markup=False)
-            self._record(parsed.name, result.message if result.ok else "Falha na assistência")
+            self._record(parsed.name, f"Assistência {'concluída' if result.ok else 'falhou'} · {action_id}")
         except (ContextError, AssistantError) as exc:
             self.console.print(str(exc), markup=False)
         except KeyboardInterrupt:
@@ -311,6 +313,7 @@ class PythonLabCLI:
         cancel = threading.Event()
         done = threading.Event()
         scheduled = threading.Event()
+        action_id = uuid4().hex
         state = {"cancel": cancel, "done": done, "task": None}
         self._classic_action = state
 
@@ -326,7 +329,7 @@ class PythonLabCLI:
                     self.console.print(str(exc), markup=False)
                 else:
                     self.console.print(result.message, markup=False)
-                    self._record(parsed.name, result.message if result.ok else "Falha na assistência")
+                    self._record(parsed.name, f"Assistência {'concluída' if result.ok else 'falhou'} · {action_id}")
                 finally:
                     self._classic_action = None
                     done.set()

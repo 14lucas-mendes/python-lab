@@ -322,10 +322,6 @@ class VerificationService:
                             check = VerificationCheck(
                                 "pytest", "failed", "Pytest excedeu 30 segundos."
                             )
-                        elif result.truncated:
-                            check = VerificationCheck(
-                                "pytest", "failed", "Saída de pytest incompleta."
-                            )
                         elif result.return_code == 1 and "No module named pytest" in result.output:
                             check = VerificationCheck(
                                 "pytest", "unavailable", "Pytest indisponível."
@@ -335,6 +331,8 @@ class VerificationService:
                                 report
                             )
                             detail = "; ".join((summary, *diagnostics))
+                            if result.truncated:
+                                detail += "; Saída de console truncada."
                             check = VerificationCheck(
                                 "pytest",
                                 "passed"

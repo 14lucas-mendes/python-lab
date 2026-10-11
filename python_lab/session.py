@@ -17,7 +17,9 @@ def _now() -> str:
 
 
 def _prune(db: sqlite3.Connection) -> None:
-    db.execute("DELETE FROM sessions WHERE id IN (SELECT id FROM sessions WHERE ended_at IS NOT NULL ORDER BY started_at DESC, rowid DESC LIMIT -1 OFFSET ?)", (MAX_SESSIONS,))
+    open_count = db.execute("SELECT COUNT(*) FROM sessions WHERE ended_at IS NULL").fetchone()[0]
+    capacity = max(MAX_SESSIONS - open_count, 0)
+    db.execute("DELETE FROM sessions WHERE id IN (SELECT id FROM sessions WHERE ended_at IS NOT NULL ORDER BY started_at DESC, rowid DESC LIMIT -1 OFFSET ?)", (capacity,))
 
 
 class SessionLog:

@@ -59,7 +59,10 @@ class AssistantCommands:
             raise asyncio.CancelledError()
         worker = asyncio.create_task(asyncio.to_thread(function))
         try:
-            return await asyncio.shield(worker)
+            result = await asyncio.shield(worker)
+            if cancel.is_set():
+                raise asyncio.CancelledError()
+            return result
         except asyncio.CancelledError:
             cancel.set()
             while not worker.done():
@@ -89,12 +92,14 @@ class AssistantCommands:
             exc.__cause__, (OSError, TypeError, ValueError))
         return cls._error(exc, "execution" if operational else "usage")
 
-    def _associated_mission(self, snapshot):
-        mission_id = self.app.progress.current_mission_id if self.app else None
-        if mission_id is None:
-            return None
-        solution = self.app.mission_by_id(mission_id).solution_path.resolve()
-        return mission_id if any((snapshot.root / source.path).resolve() == solution for source in snapshot.sources) else None
+    @staticmethod
+    def _belongs_to_solution(solution: Path | None, selected: Path) -> bool:
+        if solution is None:
+            return False
+        selected = selected.resolve()
+        return selected == solution or (
+            solution.is_dir() and selected.is_relative_to(solution)
+        )
 
     def _capture_mission_context(self) -> tuple[str | None, Path | None, str | None]:
         """Freeze association and attempt before an adapter starts async work."""
@@ -108,14 +113,16 @@ class AssistantCommands:
         action_cancel = cancel or threading.Event()
         try:
             mission_id, solution, attempt_id = self._capture_mission_context()
+            workspace, mode = self.workspace, self.mode
+            selected = self._selection(args)
             snapshot = await self._blocking(
-                lambda: self.workspace.snapshot(self._selection(args)), action_cancel)
+                lambda: workspace.snapshot(selected), action_cancel)
             if mission_id is not None and not any(
-                (snapshot.root / source.path).resolve() == solution for source in snapshot.sources
+                self._belongs_to_solution(solution, snapshot.root / source.path) for source in snapshot.sources
             ):
                 mission_id, attempt_id = None, None
             request = AssistantRequest("review", "Revise o código e proponha correções com diff.",
-                                       self.mode, 3, snapshot, mission_id=mission_id)
+                                       mode, 3, snapshot, mission_id=mission_id)
             if self.review_factory is None:
                 raise AssistantError("Serviço de revisão indisponível.")
             result = await self.review_factory().review(request, cancel=action_cancel, attempt_id=attempt_id)
@@ -154,7 +161,7 @@ class AssistantCommands:
             patch = await self._blocking(lambda: self.patches.load(args[0]), action_cancel)
             diff = await self._blocking(lambda: self.patches.preview(patch), action_cancel)
             destination = self.workspace.root / patch.change.path
-            if mission_id is not None and solution != destination.resolve():
+            if mission_id is not None and not self._belongs_to_solution(solution, destination):
                 mission_id, attempt_id = None, None
             workspace_id = hashlib.sha256(str(self.workspace.root).encode("utf-8")).hexdigest()
             # Local proposal IDs can recur in another store or selected file.
@@ -304,7 +311,9 @@ class AssistantCommands:
     async def check(self, args: tuple[str, ...], *, cancel: threading.Event | None = None) -> CommandResult:
         action_cancel = cancel or threading.Event()
         try:
-            snapshot = self.workspace.snapshot(self._selection(args))
+            workspace = self.workspace
+            selected = self._selection(args)
+            snapshot = await self._blocking(lambda: workspace.snapshot(selected), action_cancel)
             report = await self._inspect(snapshot, action_cancel)
             lines = ["Verificação local concluída."]
             for check in report.checks:
@@ -358,19 +367,25 @@ class AssistantCommands:
                 raise ValueError("Nível deve estar entre 0 e 4.")
             if action == "diagnose" and traceback_path is None:
                 raise ValueError("Use --traceback ARQUIVO para diagnosticar.")
-            snapshot = self.workspace.snapshot(self._selection(tuple(names)))
+            workspace, mode = self.workspace, self.mode
+            mission_id, solution, attempt_id = self._capture_mission_context()
+            selected = self._selection(tuple(names))
+            snapshot = await self._blocking(lambda: workspace.snapshot(selected), action_cancel)
             traceback = None
             if traceback_path is not None:
-                trace_snapshot = self.workspace.snapshot((Path(traceback_path),))
+                trace_snapshot = await self._blocking(
+                    lambda: workspace.snapshot((Path(traceback_path),)), action_cancel)
                 traceback = trace_snapshot.sources[0].text
-            mission_id = self._associated_mission(snapshot)
-            mode = self.mode
+            if mission_id is not None and not any(
+                self._belongs_to_solution(solution, snapshot.root / source.path) for source in snapshot.sources
+            ):
+                mission_id, attempt_id = None, None
             prompt = ("Explique o código selecionado e suas causas."
                       if action == "explain" else "Diagnostique o traceback usando o código selecionado como dados.")
             request = AssistantRequest(action, prompt, mode, level, snapshot,
                                        traceback=traceback, mission_id=mission_id)
             service = self._service()
-            answer = await service.execute(request, cancel=action_cancel)
+            answer = await service.execute(request, cancel=action_cancel, attempt_id=attempt_id)
             data = asdict(answer)
             sections = [answer.summary, answer.explanation, "\n".join(answer.steps), f"Ajuda nível {answer.assistance_level}"]
             references = ", ".join(
