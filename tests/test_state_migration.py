@@ -399,3 +399,31 @@ def test_schema_backup_restores_live_wal_sessions_and_import_marker(tmp_path):
             assert db.execute('PRAGMA integrity_check').fetchone()[0] == 'ok'
     finally:
         live.close()
+
+
+def test_schema_backup_flush_uses_write_capable_handle_without_truncation(tmp_path, monkeypatch):
+    """Windows FlushFileBuffers requires a writable handle; exercise that capability."""
+    import sqlite3
+    target = tmp_path / 'lab.sqlite3'
+    live, raw, _ = _old_sqlite(target)
+    original_fsync = os.fsync
+    flushed = []
+
+    def flush_write_capable_descriptor(descriptor):
+        # A zero-byte OS write checks real descriptor access without changing
+        # SQLite bytes. The old read-only handle fails with EBADF on POSIX too.
+        os.write(descriptor, b'')
+        original_fsync(descriptor)
+        flushed.append(descriptor)
+
+    monkeypatch.setattr('python_lab.storage.database.os.fsync', flush_write_capable_descriptor)
+    try:
+        assert ProgressRepository(target).load().missions['001'].max_assistance_level == 2
+        assert len(flushed) == 1
+        backup = next((tmp_path / 'backups').glob('*.bak'))
+        with sqlite3.connect(backup) as restored:
+            assert restored.execute('PRAGMA integrity_check').fetchone()[0] == 'ok'
+            assert restored.execute('SELECT payload,revision FROM progress').fetchone() == (raw, 7)
+            assert restored.execute('PRAGMA user_version').fetchone()[0] == 0
+    finally:
+        live.close()

@@ -96,17 +96,29 @@ class AssistantCommands:
         solution = self.app.mission_by_id(mission_id).solution_path.resolve()
         return mission_id if any((snapshot.root / source.path).resolve() == solution for source in snapshot.sources) else None
 
+    def _capture_mission_context(self) -> tuple[str | None, Path | None, str | None]:
+        """Freeze association and attempt before an adapter starts async work."""
+        mission_id = self.app.progress.current_mission_id if self.app else None
+        if mission_id is None:
+            return None, None, None
+        solution = self.app.mission_by_id(mission_id).solution_path.resolve()
+        return mission_id, solution, self.app.capture_assistance_attempt(mission_id)
+
     async def review(self, args, *, cancel=None):
         action_cancel = cancel or threading.Event()
         try:
+            mission_id, solution, attempt_id = self._capture_mission_context()
             snapshot = await self._blocking(
                 lambda: self.workspace.snapshot(self._selection(args)), action_cancel)
-            mission_id = self._associated_mission(snapshot)
+            if mission_id is not None and not any(
+                (snapshot.root / source.path).resolve() == solution for source in snapshot.sources
+            ):
+                mission_id, attempt_id = None, None
             request = AssistantRequest("review", "Revise o código e proponha correções com diff.",
                                        self.mode, 3, snapshot, mission_id=mission_id)
             if self.review_factory is None:
                 raise AssistantError("Serviço de revisão indisponível.")
-            result = await self.review_factory().review(request, cancel=action_cancel)
+            result = await self.review_factory().review(request, cancel=action_cancel, attempt_id=attempt_id)
             data = asdict(result)
             previews = []
             lines = ["Revisão local concluída; sugestões não são verificação executada."]
@@ -138,13 +150,12 @@ class AssistantCommands:
                 raise ValueError("Uso: /apply ID [--yes].")
             if self.patches is None:
                 raise AssistantError("Serviço de propostas indisponível.")
+            mission_id, solution, attempt_id = self._capture_mission_context()
             patch = await self._blocking(lambda: self.patches.load(args[0]), action_cancel)
             diff = await self._blocking(lambda: self.patches.preview(patch), action_cancel)
             destination = self.workspace.root / patch.change.path
-            mission_id = self.app.progress.current_mission_id if self.app else None
-            if mission_id and self.app.mission_by_id(mission_id).solution_path.resolve() != destination.resolve():
-                mission_id = None
-            attempt_id = self.app.capture_assistance_attempt(mission_id) if self.app else None
+            if mission_id is not None and solution != destination.resolve():
+                mission_id, attempt_id = None, None
             workspace_id = hashlib.sha256(str(self.workspace.root).encode("utf-8")).hexdigest()
             # Local proposal IDs can recur in another store or selected file.
             scope = f"{self.patches.data_dir.resolve()}\0{destination.resolve()}"

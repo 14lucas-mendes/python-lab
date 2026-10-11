@@ -55,7 +55,8 @@ class ReviewService:
         self.capture_attempt = capture_attempt
 
     async def review(
-        self, request: AssistantRequest, *, cancel: threading.Event | None = None
+        self, request: AssistantRequest, *, cancel: threading.Event | None = None,
+        attempt_id: str | None = None,
     ) -> ReviewResult:
         if request.action != "review":
             raise AssistantError("Ação de revisão esperada.")
@@ -63,7 +64,10 @@ class ReviewService:
             raise AssistantError("Propostas pertencem a outro workspace.")
         request_id = uuid4().hex
         try:
-            attempt_id = self.capture_attempt(request.mission_id) if self.capture_attempt else None
+            # Shared adapters already captured identity before their snapshot
+            # worker. Direct callers still capture before this service's work.
+            if attempt_id is None and request.mission_id is not None:
+                attempt_id = self.capture_attempt(request.mission_id) if self.capture_attempt else None
         except Exception as exc:
             raise AssistantError(f"Não foi possível capturar a tentativa da missão: {exc}") from exc
         action_cancel = cancel if cancel is not None else threading.Event()

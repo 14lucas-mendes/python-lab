@@ -26,7 +26,7 @@ def _backup_database(path: Path, version: int) -> Path:
                 source.backup(backup)
                 if backup.execute("PRAGMA integrity_check").fetchone()[0] != "ok":
                     raise ValueError("Backup SQLite inválido")
-        with temporary.open("rb") as output:
+        with temporary.open("r+b") as output:
             os.fsync(output.fileno())
         os.replace(temporary, destination)
         return destination
