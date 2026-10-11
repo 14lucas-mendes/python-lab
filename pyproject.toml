@@ -29,6 +29,12 @@ exclude = ["python_lab.scaffolding.templates*"]
 [tool.setuptools.package-data]
 "python_lab.tui" = ["*.tcss"]
 "python_lab.scaffolding" = [
+    "templates/bot/.gitignore",
+    "templates/bot/README.md",
+    "templates/bot/pyproject.toml",
+    "templates/bot/src/__package__/__init__.py",
+    "templates/bot/src/__package__/main.py",
+    "templates/bot/tests/test_app.py",
     "templates/cli/.gitignore",
     "templates/cli/README.md",
     "templates/cli/pyproject.toml",

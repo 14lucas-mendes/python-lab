@@ -40,6 +40,7 @@ def run(command, cwd, *, timeout=180):
     pytest.param("flask", "flask-app", id="flask"),
     pytest.param("django", "django-app", id="django"),
     pytest.param("library", "library-app", id="library"),
+    pytest.param("bot", "bot-app", id="bot"),
     pytest.param("cli", "app-__distribution__x", id="cli_literal_token"),
     pytest.param("fastapi", "app-__distribution__x", id="fastapi_literal_token"),
 ])
@@ -105,6 +106,11 @@ def test_generated_project_in_clean_venv(tmp_path, template, project_name):
             python, "-c", f"from {package}.main import greet; print(greet('Ana'))",
         ], target)
         assert example.stdout == "Olá, Ana!\n"
+    elif template == "bot":
+        response = run([python, "-m", f"{package}.main", "olá"], target)
+        assert response.stdout == "Eco: olá\n"
+        console = executable_dir / (f"{package}.exe" if os.name == "nt" else package)
+        assert run([console, "olá"], target).stdout == "Eco: olá\n"
     run([
         python, "-c",
         "from importlib.metadata import distributions; from packaging.specifiers import SpecifierSet; "

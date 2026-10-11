@@ -12,9 +12,9 @@ import pytest
 from python_lab.assistant.errors import AssistantError
 
 
-ADDITIONAL_TEMPLATES = ["flask", "django", "library"]
-README_COMMANDS = {"flask": "-m flask --app example_app.main:app run", "django": "-m example_app.main", "library": "from example_app.main import greet; print(greet('Ana'))"}
-CONTRACT_MARKERS = {"flask": "/health", "django": "/health", "library": "Olá, Ana!"}
+ADDITIONAL_TEMPLATES = ["flask", "django", "library", "bot"]
+README_COMMANDS = {"flask": "-m flask --app example_app.main:app run", "django": "-m example_app.main", "library": "from example_app.main import greet; print(greet('Ana'))", "bot": '-m example_app.main "olá"'}
+CONTRACT_MARKERS = {"flask": "/health", "django": "/health", "library": "Olá, Ana!", "bot": "olá"}
 
 
 def scaffold_api():
@@ -439,3 +439,14 @@ def test_library_typed_example_has_no_runtime_dependency(tmp_path):
     assert "def greet(name: str) -> str:" in source
     # A Flask dependency collision should remain usable by a standard-library template.
     assert Service().create("library", tmp_path / "flask").target.is_dir()
+
+
+def test_bot_echo_has_local_unicode_contract_and_console_entrypoint(tmp_path):
+    _, Service, _ = scaffold_api()
+    result = Service().create("bot", tmp_path / "example")
+    manifest = tomllib.loads((result.target / "pyproject.toml").read_text(encoding="utf-8"))
+    assert manifest["project"]["dependencies"] == []
+    assert manifest["project"]["scripts"] == {"example": "example.main:main"}
+    test = (result.target / "tests/test_app.py").read_text(encoding="utf-8")
+    assert 'echo("olá") == "Eco: olá"' in test
+    assert Service().create("bot", tmp_path / "django").target.is_dir()
