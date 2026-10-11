@@ -8,7 +8,7 @@ import pytest
 
 from python_lab.models import AppProgress, MissionProgress
 from python_lab.progress import ProgressError, ProgressRepository
-from python_lab.session import SessionLog
+from python_lab.session import MAX_SESSIONS, SessionLog
 from python_lab.storage.migration import migrate_json_state
 from python_lab.storage.migration import _backup
 from python_lab.cli import build_app, main
@@ -171,8 +171,10 @@ def test_migration_applies_retention_without_dropping_open_sessions(tmp_path):
     target = tmp_path / "state" / "lab.sqlite3"
     migrate_json_state(legacy, target)
     imported = SessionLog(target).load()
-    assert sum(item["ended_at"] is None for item in imported) == 2
-    assert sum(item["ended_at"] is not None for item in imported) == 20
+    assert {item["id"] for item in imported if item["ended_at"] is None} == {"0", "1"}
+    retained_closed = [item["id"] for item in imported if item["ended_at"] is not None]
+    assert len(retained_closed) == MAX_SESSIONS - 2
+    assert retained_closed == [str(index) for index in range(25 - (MAX_SESSIONS - 2), 25)]
     assert len(next(item for item in imported if item["id"] == "0")["events"]) == 200
 
 
