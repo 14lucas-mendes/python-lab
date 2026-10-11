@@ -93,8 +93,16 @@ def run_tests(
     env.pop("PYTEST_ADDOPTS", None)
     if solution_path is not None:
         env["PYTHON_LAB_SOLUTION"] = str(solution_path)
-    selected = (project_root / test_path).resolve()
-    suite_root = selected if selected.is_dir() else selected.parent
+    try:
+        selected = (project_root / test_path).resolve()
+        suite_root = selected if selected.is_dir() else selected.parent
+    except (OSError, RuntimeError) as exc:
+        return TestResult(
+            passed=False,
+            return_code=-1,
+            output=f"Não foi possível acessar os testes: {exc}",
+            summary="Falha ao executar pytest",
+        )
     with tempfile.TemporaryDirectory(prefix="python-lab-pytest-") as report_dir:
         report_path = Path(report_dir) / "results.xml"
         config_path = Path(report_dir) / "pytest.ini"

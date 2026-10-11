@@ -195,6 +195,23 @@ def test_runner_reports_missing_pytest(monkeypatch, tmp_path):
     assert "pytest" in result.output.lower()
 
 
+@pytest.mark.parametrize("error", [PermissionError("unreadable parent"), RuntimeError("symlink loop")],
+                         ids=["unreadable-path", "symlink-loop"])
+def test_runner_reports_unresolvable_selected_path(monkeypatch, tmp_path, error):
+    def cannot_resolve(self):
+        raise error
+
+    # Resolve uses platform-specific filesystem operations. Keep this failure
+    # seam local to the call so pytest's own path handling remains untouched.
+    with monkeypatch.context() as patch:
+        patch.setattr(Path, "resolve", cannot_resolve)
+        result = run_tests(tmp_path / "tests", tmp_path)
+
+    assert not result.passed and result.return_code == -1
+    assert str(error) in result.output
+    assert result.summary == "Falha ao executar pytest"
+
+
 @pytest.mark.parametrize("report", ["<broken", '<testsuite tests="invalid"/>', '<testsuite tests="0"/>', '<testsuite tests="1" skipped="1"/>'])
 def test_runner_rejects_invalid_or_incomplete_report(monkeypatch, tmp_path, report):
     def fake_run(self, argv, cwd, **kwargs):
