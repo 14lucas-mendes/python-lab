@@ -13,6 +13,7 @@ from python_lab.assistant.models import (AssistantAnswer, AssistantRequest, Revi
     WorkspaceSnapshot, validate_answer, validate_review)
 from python_lab.assistant.provider import UsageBudget
 from python_lab.assistant.settings import AssistantSettings
+from python_lab.exercises.models import ExerciseDraft, validate_draft
 
 T = TypeVar("T")
 
@@ -49,6 +50,20 @@ REVIEW_SCHEMA = _object(
         },
     }
 )
+
+EXERCISE_SCHEMA = _object({
+    "id": {"type": "string"},
+    "mission": _object({
+        "id": {"type": "string"}, "slug": {"type": "string"},
+        "title": {"type": "string"}, "summary": {"type": "string"},
+        **{name: {"type": "array", "items": {"type": "string"}} for name in (
+            "skills", "prerequisites", "success_criteria", "learning_objectives", "reflection_questions")},
+        "cycle": {"type": "integer", "minimum": 1, "maximum": 13},
+        "lesson_id": {"type": "string"}, "tests": {"type": "string", "enum": ["tests"]},
+        "solution": {"type": "string", "enum": ["starter.py"]},
+    }),
+    **{name: {"type": "string"} for name in ("briefing", "starter", "reference", "tests")},
+})
 
 
 def _input(request: AssistantRequest) -> list[dict[str, str]]:
@@ -139,6 +154,11 @@ def _answer(payload: Mapping[str, object], snapshot: WorkspaceSnapshot, usage: U
     return validate_answer({**payload, "usage": asdict(usage)}, snapshot)
 
 
+def _draft(payload: Mapping[str, object], snapshot: WorkspaceSnapshot, usage: Usage) -> ExerciseDraft:
+    # Transport has settled trusted SDK usage before structural validation.
+    return validate_draft(payload)
+
+
 class OpenAIProvider:
     """Construct once per local assistant session; key is read only here.
 
@@ -176,6 +196,13 @@ class OpenAIProvider:
             schema=REVIEW_SCHEMA,
             schema_name="review_reply",
             validate=validate_review,
+        )
+
+    async def draft(self, request: AssistantRequest) -> ExerciseDraft:
+        if request.action != "exercise":
+            raise AssistantError("Ação de exercício esperada.")
+        return await self.transport.generate(
+            request, schema=EXERCISE_SCHEMA, schema_name="exercise_draft", validate=_draft,
         )
 
     async def aclose(self) -> None:
