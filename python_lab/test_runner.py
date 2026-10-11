@@ -106,7 +106,15 @@ def run_tests(
     with tempfile.TemporaryDirectory(prefix="python-lab-pytest-") as report_dir:
         report_path = Path(report_dir) / "results.xml"
         config_path = Path(report_dir) / "pytest.ini"
-        config_path.write_text("[pytest]\n", encoding="utf-8")
+        try:
+            config_path.write_text("[pytest]\n", encoding="utf-8")
+        except OSError as exc:
+            return TestResult(
+                passed=False,
+                return_code=-1,
+                output=f"Não foi possível executar os testes: {exc}",
+                summary="Falha ao executar pytest",
+            )
         try:
             completed = ProcessRunner(env=env).run(
                 [

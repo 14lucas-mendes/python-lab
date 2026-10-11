@@ -1,3 +1,4 @@
+import errno
 import os
 import subprocess
 import threading
@@ -193,6 +194,38 @@ def test_runner_reports_missing_pytest(monkeypatch, tmp_path):
     assert result.passed is False
     assert result.return_code == -1
     assert "pytest" in result.output.lower()
+
+
+@pytest.mark.parametrize("error", [OSError(errno.EFBIG, "config exceeds file limit"),
+                                   FileNotFoundError(errno.ENOENT, "config directory disappeared")],
+                         ids=["file-limit", "missing-config-directory"])
+def test_runner_reports_config_write_failure_and_removes_temporary_files(monkeypatch, tmp_path, error):
+    written_paths = []
+    write_text = Path.write_text
+
+    def failed_write(path, *args, **kwargs):
+        if path.name != "pytest.ini":
+            return write_text(path, *args, **kwargs)
+        # A write/flush can fail after creating the file. Exercise real cleanup
+        # of that partial file and its temporary directory on every platform.
+        write_text(path, "[", encoding="utf-8")
+        written_paths.append(path)
+        raise error
+
+    def unexpected_launch(*args, **kwargs):
+        pytest.fail("pytest must not launch after its config write fails")
+
+    with monkeypatch.context() as patch:
+        patch.setattr(Path, "write_text", failed_write)
+        patch.setattr("python_lab.test_runner.ProcessRunner.run", unexpected_launch)
+        result = run_tests(tmp_path / "tests", tmp_path)
+
+    assert not result.passed and result.return_code == -1
+    assert str(error) in result.output
+    assert result.summary == "Falha ao executar pytest"
+    assert len(written_paths) == 1
+    assert not written_paths[0].exists()
+    assert not written_paths[0].parent.exists()
 
 
 @pytest.mark.parametrize("error", [PermissionError("unreadable parent"), RuntimeError("symlink loop")],
