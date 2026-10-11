@@ -119,12 +119,13 @@ jobs:
         shell: bash
         run: |
           suite_log="$RUNNER_TEMP/python-lab-pytest.log"
-          if "$PYTHON" -m pytest -ra > "$suite_log" 2>&1; then
+          suite_xml="$RUNNER_TEMP/python-lab-pytest.xml"
+          if "$PYTHON" -m pytest -ra --junitxml="$suite_xml" > "$suite_log" 2>&1; then
             cat "$suite_log"
           else
             suite_status=$?
             cat "$suite_log"
-            diagnostic="$(cat "$suite_log")"
+            diagnostic="$("$PYTHON" scripts/ci_failure_summary.py "$suite_log" --junit "$suite_xml")"
             if (( ${#diagnostic} > 6000 )); then
               diagnostic="${diagnostic: -6000}"
             fi
@@ -135,18 +136,19 @@ jobs:
             printf '::error title=Native pytest suite::%s\n' "$diagnostic"
             exit "$suite_status"
           fi
-      - name: Clean-venv template preparation and functional smoke
+      - name: Clean-venv template preparation and functional smokes
         shell: bash
         env:
           PYTHON_LAB_TEMPLATE_SMOKE: '1'
         run: |
           smoke_log="$RUNNER_TEMP/python-lab-template-smoke.log"
-          if "$PYTHON" -m pytest tests/test_template_smoke.py -q -s > "$smoke_log" 2>&1; then
+          smoke_xml="$RUNNER_TEMP/python-lab-template-smoke.xml"
+          if "$PYTHON" -m pytest tests/test_template_smoke.py -q -s --junitxml="$smoke_xml" > "$smoke_log" 2>&1; then
             cat "$smoke_log"
           else
             smoke_status=$?
             cat "$smoke_log"
-            diagnostic="$(cat "$smoke_log")"
+            diagnostic="$("$PYTHON" scripts/ci_failure_summary.py "$smoke_log" --junit "$smoke_xml")"
             if (( ${#diagnostic} > 6000 )); then
               diagnostic="${diagnostic: -6000}"
             fi

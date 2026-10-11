@@ -37,6 +37,7 @@ def run(command, cwd, *, timeout=180):
 @pytest.mark.parametrize("template,project_name", [
     pytest.param("cli", "cli-app", id="cli"),
     pytest.param("fastapi", "fastapi-app", id="fastapi"),
+    pytest.param("flask", "flask-app", id="flask"),
     pytest.param("cli", "app-__distribution__x", id="cli_literal_token"),
     pytest.param("fastapi", "app-__distribution__x", id="fastapi_literal_token"),
 ])
@@ -69,7 +70,7 @@ def test_generated_project_in_clean_venv(tmp_path, template, project_name):
         assert command.stdout == "Olá, Ana!\n"
         console = executable_dir / (f"{package}.exe" if os.name == "nt" else package)
         assert run([console, "--name", "Ana"], target).stdout == "Olá, Ana!\n"
-    else:
+    elif template == "fastapi":
         request = run([
             python, "-c",
             f"from fastapi.testclient import TestClient; from {package}.main import app; "
@@ -78,4 +79,21 @@ def test_generated_project_in_clean_venv(tmp_path, template, project_name):
             "assert response.json() == {'status': 'ok'}; print(response.status_code, response.json())",
         ], target)
         assert "200 {'status': 'ok'}" in request.stdout
+    elif template == "flask":
+        request = run([
+            python, "-c",
+            f"from {package}.main import app; response = app.test_client().get('/health'); "
+            "assert response.status_code == 200; assert response.json == {'status': 'ok'}; "
+            "print(response.status_code, response.json)",
+        ], target)
+        assert "200 {'status': 'ok'}" in request.stdout
+    run([
+        python, "-c",
+        "from importlib.metadata import distributions; from packaging.specifiers import SpecifierSet; "
+        "items = sorted((d.metadata['Name'], d.version, d.metadata.get('Requires-Python', '')) for d in distributions()); "
+        "[(print(f'{name}=={version}; Requires-Python: {required}'), "
+        "all(v in SpecifierSet(required) for v in ['3.11', '3.12']) or "
+        "(_ for _ in ()).throw(AssertionError(f'{name} excludes Python 3.11/3.12'))) "
+        "for name, version, required in items]",
+    ], target)
     run([python, "-m", "pip", "freeze", "--exclude-editable"], target)

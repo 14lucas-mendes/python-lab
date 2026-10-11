@@ -41,6 +41,12 @@ exclude = ["python_lab.scaffolding.templates*"]
     "templates/fastapi/src/__package__/__init__.py",
     "templates/fastapi/src/__package__/main.py",
     "templates/fastapi/tests/test_app.py",
+    "templates/flask/pyproject.toml",
+    "templates/flask/.gitignore",
+    "templates/flask/src/__package__/__init__.py",
+    "templates/flask/src/__package__/main.py",
+    "templates/flask/tests/test_app.py",
+    "templates/flask/README.md",
 ]
 
 [tool.pytest.ini_options]

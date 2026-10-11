@@ -9,7 +9,7 @@ _FILES = (
     "tests/test_app.py",
 )
 
-TEMPLATES: dict[str, tuple[str, ...]] = {"cli": _FILES, "fastapi": _FILES}
+TEMPLATES: dict[str, tuple[str, ...]] = {"cli": _FILES, "fastapi": _FILES, "flask": _FILES}
 
 # Distribution -> import namespace for the generated projects' tooling, dev and
 # tested transitive dependencies. Curated here, never discovered via pip/network.
@@ -26,6 +26,16 @@ _COMMON_DEPENDENCIES = {
 }
 DEPENDENCY_NAMES: dict[str, dict[str, str]] = {
     "cli": dict(_COMMON_DEPENDENCIES),
+    "flask": {
+        **_COMMON_DEPENDENCIES,
+        "flask": "flask",
+        "werkzeug": "werkzeug",
+        "jinja2": "jinja2",
+        "markupsafe": "markupsafe",
+        "itsdangerous": "itsdangerous",
+        "blinker": "blinker",
+        "click": "click",
+    },
     "fastapi": {
         **_COMMON_DEPENDENCIES,
         "fastapi": "fastapi",

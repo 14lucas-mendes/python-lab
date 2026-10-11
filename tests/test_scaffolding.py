@@ -12,6 +12,11 @@ import pytest
 from python_lab.assistant.errors import AssistantError
 
 
+ADDITIONAL_TEMPLATES = ["flask"]
+README_COMMANDS = {"flask": "-m flask --app example_app.main:app run"}
+CONTRACT_MARKERS = {"flask": "/health"}
+
+
 def scaffold_api():
     # Assert absence as a RED failure, rather than an import/collection error.
     assert resources.files("python_lab").joinpath("scaffolding").is_dir(), "C3 scaffolding service is missing"
@@ -33,7 +38,7 @@ def test_registered_project_structure_and_name_normalization(tmp_path, template)
     assert result.target == target
     assert result.template == template
     assert {path.relative_to(target).as_posix() for path in result.files} == expected
-    assert set(registry.TEMPLATES) == {"cli", "fastapi"}
+    assert set(registry.TEMPLATES) == {"cli", "fastapi", *ADDITIONAL_TEMPLATES}
     assert all(path.is_file() for path in result.files)
     with pytest.raises(FrozenInstanceError):
         result.template = "changed"
@@ -336,3 +341,79 @@ def test_filesystem_create_still_requires_a_native_path_object(tmp_path):
     with pytest.raises(AssistantError, match="Path"):
         Service().create("cli", str(tmp_path / "app"))
     assert list(tmp_path.iterdir()) == []
+
+
+@pytest.mark.parametrize("template", ADDITIONAL_TEMPLATES)
+def test_additional_template_contract_is_offline(tmp_path, monkeypatch, template):
+    _, Service, _ = scaffold_api()
+    def forbidden(*args, **kwargs):
+        pytest.fail("Generation attempted network/install/execution")
+    monkeypatch.setattr(socket, "socket", forbidden)
+    monkeypatch.setattr(subprocess, "Popen", forbidden)
+    target = tmp_path / "example-app"
+    result = Service().create(template, target)
+    assert result.target == target
+    assert all(path.is_file() for path in result.files)
+    assert {"pyproject.toml", "README.md", ".gitignore", "tests/test_app.py"} <= {
+        path.relative_to(target).as_posix() for path in result.files
+    }
+    manifest = tomllib.loads((target / "pyproject.toml").read_text(encoding="utf-8"))
+    assert manifest["project"]["name"] == "example-app"
+    assert manifest["project"]["requires-python"] == ">=3.11"
+    readme = (target / "README.md").read_text(encoding="utf-8")
+    for command in ["python -m venv .venv", ".venv/bin/python", ".venv\\Scripts\\python.exe", 'pip install -e ".[dev]"', "-m pytest"]:
+        assert command in readme
+    assert README_COMMANDS[template] in readme
+    assert CONTRACT_MARKERS[template] in (target / "tests/test_app.py").read_text(encoding="utf-8")
+    assert "__package__" not in "".join(path.read_text(encoding="utf-8") for path in result.files)
+    with pytest.raises(AssistantError, match="exist"):
+        Service().create(template, target)
+    assert all(path.is_file() for path in result.files)
+
+
+@pytest.mark.parametrize("name", ["flask", "Flask", "werkzeug", "jinja2", "markupsafe", "itsdangerous", "blinker", "click", "pytest", "Pygments", "colorama"])
+def test_flask_collisions_precede_resource_reads_and_target_creation(tmp_path, monkeypatch, name):
+    _, Service, _ = scaffold_api()
+    def forbidden(*args, **kwargs):
+        pytest.fail("Collision validation must precede resource reads")
+    monkeypatch.setattr(resources, "files", forbidden)
+    with pytest.raises(AssistantError, match="[Cc]onflit"):
+        Service().create("flask", tmp_path / name)
+    assert list(tmp_path.iterdir()) == []
+
+
+@pytest.mark.parametrize("template", ADDITIONAL_TEMPLATES)
+@pytest.mark.parametrize("name", ["pip", "setuptools", "wheel", "pytest", "iniconfig", "packaging", "pluggy", "Pygments", "colorama"])
+def test_additional_template_dev_collisions_precede_mutation(tmp_path, monkeypatch, template, name):
+    _, Service, _ = scaffold_api()
+    def forbidden(*args, **kwargs):
+        pytest.fail("Collision validation must precede resource reads")
+    monkeypatch.setattr(resources, "files", forbidden)
+    with pytest.raises(AssistantError, match="[Cc]onflit"):
+        Service().create(template, tmp_path / name)
+    assert list(tmp_path.iterdir()) == []
+
+
+@pytest.mark.parametrize("template", ADDITIONAL_TEMPLATES)
+def test_additional_template_failed_write_preserves_user_edits(tmp_path, monkeypatch, template):
+    _, Service, _ = scaffold_api()
+    target = tmp_path / "example-app"
+    original_open = Path.open
+    def interrupted(path, mode="r", *args, **kwargs):
+        if path == target / ".gitignore" and mode == "xb":
+            (target / "README.md").write_text("conteúdo do usuário", encoding="utf-8")
+            raise OSError("disk interrupted")
+        return original_open(path, mode, *args, **kwargs)
+    monkeypatch.setattr(Path, "open", interrupted)
+    with pytest.raises(AssistantError, match="disk interrupted"):
+        Service().create(template, target)
+    assert list(target.iterdir()) == [target / "README.md"]
+    assert (target / "README.md").read_text(encoding="utf-8") == "conteúdo do usuário"
+
+
+@pytest.mark.parametrize("template", ADDITIONAL_TEMPLATES)
+def test_additional_template_native_windows_basename_contract(template):
+    scaffold_api()
+    from pathlib import PureWindowsPath
+    from python_lab.scaffolding.service import _project_package
+    assert _project_package(template, PureWindowsPath(r"C:\Users\developer\new projects\my-app")) == "my_app"
