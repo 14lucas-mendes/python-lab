@@ -54,13 +54,15 @@ class AssistantCommands:
                 "/diagnose": self.diagnose, "/review": self.review,
                 "/apply": self.apply, "/verify": self.verify, "/new": self.new}
 
-    async def _blocking(self, function, cancel):
+    async def _blocking(self, function, cancel, *, reject_cancelled_result=False):
         if cancel.is_set():
             raise asyncio.CancelledError()
         worker = asyncio.create_task(asyncio.to_thread(function))
         try:
             result = await asyncio.shield(worker)
-            if cancel.is_set():
+            # Capture is unaccepted read-only work. Committed writes must keep
+            # their authoritative result, including applied/persistence errors.
+            if reject_cancelled_result and cancel.is_set():
                 raise asyncio.CancelledError()
             return result
         except asyncio.CancelledError:
@@ -116,7 +118,8 @@ class AssistantCommands:
             workspace, mode = self.workspace, self.mode
             selected = self._selection(args)
             snapshot = await self._blocking(
-                lambda: workspace.snapshot(selected), action_cancel)
+                lambda: workspace.snapshot(selected), action_cancel,
+                reject_cancelled_result=True)
             if mission_id is not None and not any(
                 self._belongs_to_solution(solution, snapshot.root / source.path) for source in snapshot.sources
             ):
@@ -313,7 +316,8 @@ class AssistantCommands:
         try:
             workspace = self.workspace
             selected = self._selection(args)
-            snapshot = await self._blocking(lambda: workspace.snapshot(selected), action_cancel)
+            snapshot = await self._blocking(lambda: workspace.snapshot(selected), action_cancel,
+                reject_cancelled_result=True)
             report = await self._inspect(snapshot, action_cancel)
             lines = ["Verificação local concluída."]
             for check in report.checks:
@@ -370,11 +374,13 @@ class AssistantCommands:
             workspace, mode = self.workspace, self.mode
             mission_id, solution, attempt_id = self._capture_mission_context()
             selected = self._selection(tuple(names))
-            snapshot = await self._blocking(lambda: workspace.snapshot(selected), action_cancel)
+            snapshot = await self._blocking(lambda: workspace.snapshot(selected), action_cancel,
+                reject_cancelled_result=True)
             traceback = None
             if traceback_path is not None:
                 trace_snapshot = await self._blocking(
-                    lambda: workspace.snapshot((Path(traceback_path),)), action_cancel)
+                    lambda: workspace.snapshot((Path(traceback_path),)), action_cancel,
+                    reject_cancelled_result=True)
                 traceback = trace_snapshot.sources[0].text
             if mission_id is not None and not any(
                 self._belongs_to_solution(solution, snapshot.root / source.path) for source in snapshot.sources

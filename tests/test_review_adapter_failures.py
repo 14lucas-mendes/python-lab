@@ -129,3 +129,100 @@ def test_stale_confirmation_never_claims_applied(tmp_path):
     assert result.data.get('applied') is not True
     assert 'Arquivo aplicado' not in result.message
     assert source.read_bytes() == b'external=3\n'
+
+
+@pytest.mark.parametrize('adapter', ['shared', 'tui'])
+@pytest.mark.parametrize('associated', [False, True])
+def test_event_cancellation_after_actual_write_preserves_applied_recording_error(app, tmp_path, monkeypatch, adapter, associated):
+    import threading
+    from python_lab.learning_events import AssistanceRecorder
+    from python_lab.storage.errors import ProgressError
+    from python_lab.tui.app import PythonLabTUI
+    from python_lab.tui.screens import ConfirmScreen
+    from tests.test_review_tui import wait_action
+
+    if associated:
+        app.start('001')
+        source = app.current_mission().solution_path
+    else:
+        source = tmp_path / 'bug.py'
+    source.write_bytes(b'x=1\n')
+    state = tmp_path / 'patch-state'
+    patch = proposal(tmp_path, state, str(source.relative_to(tmp_path)), 'x=2\n')
+    cancel = threading.Event()
+    recorded = []
+    tui = None
+
+    def failed_record(self, event, **kwargs):
+        # The real PatchService has already replaced the selected bytes.
+        assert source.read_bytes() == b'x=2\n'
+        recorded.append(event.mission_id)
+        action_cancel = tui._assistant_cancel if tui is not None else cancel
+        assert action_cancel is not None
+        action_cancel.set()
+        raise ProgressError('assistance persistence failed after replacement')
+
+    monkeypatch.setattr(AssistanceRecorder, 'record', failed_record)
+    runtime = AssistantRuntime(state, app if associated or adapter == 'tui' else None)
+    if adapter == 'shared':
+        commands = runtime.commands(Workspace(tmp_path), 'tutor' if associated else 'assistant',
+                                    app=app if associated else None)
+        result = asyncio.run(commands.apply((patch.id, '--yes'), cancel=cancel))
+        assert cancel.is_set()
+        assert not result.ok and result.data['applied'] is True
+        assert result.data['error_kind'] == 'execution'
+        assert result.data['path'] == str(source)
+        assert 'Arquivo aplicado; falha ao registrar ajuda:' in result.message
+        assert 'assistance persistence failed after replacement' in result.message
+    else:
+        tui = PythonLabTUI(app, assistant_project=tmp_path)
+        tui.cli.assistant_runtime = runtime
+        async def run():
+            async with tui.run_test() as pilot:
+                await pilot.pause()
+                tui._submit(f'/apply {patch.id} --yes')
+                for _ in range(200):
+                    if isinstance(tui.screen, ConfirmScreen):
+                        break
+                    await asyncio.sleep(.01)
+                assert isinstance(tui.screen, ConfirmScreen)
+                await pilot.pause()
+                await pilot.press('y')
+                await wait_action(tui)
+                transcript = '\n'.join(tui.transcript_entries)
+                assert 'Arquivo aplicado; falha ao registrar ajuda:' in transcript
+                assert 'assistance persistence failed after replacement' in transcript
+                assert 'Ação cancelada.' not in transcript
+        asyncio.run(run())
+    assert source.read_bytes() == b'x=2\n'
+    assert recorded == ['001' if associated else None]
+    assert not app.progress.evidence
+
+
+@pytest.mark.parametrize('action,selected', [('check', 'code.py'), ('explain', 'code.py'),
+    ('diagnose', 'code.py'), ('diagnose', 'trace.txt'), ('review', 'code.py')])
+def test_event_after_readonly_snapshot_rejects_unaccepted_work(tmp_path, monkeypatch, action, selected):
+    import threading
+    from python_lab.assistant.commands import AssistantCommands
+    from tests.test_final_review_regressions import NoTools
+    (tmp_path / 'code.py').write_text('x=1\n')
+    (tmp_path / 'trace.txt').write_text('trace\n')
+    workspace = Workspace(tmp_path)
+    original = workspace.snapshot
+    cancel = threading.Event()
+    captured = []
+    def snapshot(paths):
+        result = original(paths)
+        captured.append(paths[0].name)
+        if paths[0].name == selected:
+            cancel.set()
+        return result
+    monkeypatch.setattr(workspace, 'snapshot', snapshot)
+    def unexpected_service():
+        pytest.fail('Cancelled snapshot proceeded to an unaccepted service')
+    commands = AssistantCommands(None, workspace, 'assistant', analysis=NoTools(),
+        service_factory=unexpected_service, review_factory=unexpected_service)
+    args = ('code.py', '--traceback', 'trace.txt') if action == 'diagnose' else ('code.py',)
+    with pytest.raises(asyncio.CancelledError):
+        asyncio.run(getattr(commands, action)(args, cancel=cancel))
+    assert captured[-1] == selected and cancel.is_set()
