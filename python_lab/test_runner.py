@@ -88,17 +88,32 @@ def run_tests(
     cancel: threading.Event | None = None,
 ) -> TestResult:
     env = os.environ.copy()
+    # The caller selects one suite. Ambient pytest options/configuration must
+    # not add collection paths or change the meaning of its result.
+    env.pop("PYTEST_ADDOPTS", None)
     if solution_path is not None:
         env["PYTHON_LAB_SOLUTION"] = str(solution_path)
+    selected = (project_root / test_path).resolve()
+    suite_root = selected if selected.is_dir() else selected.parent
     with tempfile.TemporaryDirectory(prefix="python-lab-pytest-") as report_dir:
         report_path = Path(report_dir) / "results.xml"
+        config_path = Path(report_dir) / "pytest.ini"
+        config_path.write_text("[pytest]\n", encoding="utf-8")
         try:
             completed = ProcessRunner(env=env).run(
                 [
                     sys.executable,
                     "-m",
                     "pytest",
-                    str(test_path),
+                    str(selected),
+                    "-c",
+                    str(config_path),
+                    # Bound parent traversal too: Windows junction aliases at
+                    # an ambient ancestor can otherwise collect this suite twice.
+                    "--rootdir",
+                    str(suite_root),
+                    "--confcutdir",
+                    str(suite_root),
                     "-q",
                     "-rA",
                     "--junitxml",
@@ -112,7 +127,7 @@ def run_tests(
             # Cleanup failure remains an error even if cancellation caused the
             # interruption. Do not let it become an ordinary cancelled result.
             raise
-        except FileNotFoundError as exc:
+        except FileNotFoundError:
             return TestResult(
                 passed=False,
                 return_code=-1,

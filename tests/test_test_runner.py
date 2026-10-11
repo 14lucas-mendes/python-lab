@@ -1,4 +1,5 @@
 import os
+import subprocess
 import threading
 from concurrent.futures import ThreadPoolExecutor
 
@@ -55,6 +56,78 @@ def test_runner_rejects_empty_suite(tmp_path):
     result = run_tests(tests, tmp_path)
 
     assert result.passed is False
+
+
+@pytest.mark.parametrize("selected_file", [False, True], ids=["directory", "file"])
+def test_runner_collects_selected_suite_once_under_parent_aliases(tmp_path, monkeypatch, selected_file):
+    """Exercise pytest's Windows samefile matching through real directory aliases."""
+    project = tmp_path / "project"
+    project.mkdir()
+    (project / "context.txt").write_text("1", encoding="utf-8")
+    ambient = tmp_path / "ambient"
+    users = ambient / "Users"
+    suite = users / "catalog" / "tests"
+    suite.mkdir(parents=True)
+    # This inherited config makes pytest traverse the ancestor containing both
+    # names. Windows junctions are samefile(), but are not islink().
+    (ambient / "pytest.ini").write_text("[pytest]\n", encoding="utf-8")
+    alias = ambient / "Documents and Settings"
+    if sys.platform == "win32":
+        subprocess.run(["cmd", "/c", "mklink", "/J", str(alias), str(users)],
+                       check=True, capture_output=True)
+    else:
+        alias.symlink_to(users, target_is_directory=True)
+        # Emulate only the two OS facts used by Session.collect. Pytest's real
+        # traversal, path identities, fixtures, execution and JUnit remain live.
+        plugin = tmp_path / "junction_collection.py"
+        plugin.write_text(
+            "import os, sys\nfrom types import SimpleNamespace\nimport _pytest.main as main\n"
+            "main.sys = SimpleNamespace(**{**vars(sys), 'platform': 'win32'})\n"
+            "path = SimpleNamespace(**vars(os.path))\n"
+            "path.islink = lambda path: False\n"
+            "main.os = SimpleNamespace(**{**vars(os), 'path': path})\n",
+            encoding="utf-8",
+        )
+        monkeypatch.setenv("PYTEST_PLUGINS", "junction_collection")
+        monkeypatch.setenv("PYTHONPATH", str(tmp_path) + os.pathsep + os.getenv("PYTHONPATH", ""))
+    (suite / "conftest.py").write_text(
+        "from pathlib import Path\nimport pytest\n"
+        "@pytest.fixture\ndef answer():\n"
+        "    return int(Path('context.txt').read_text())\n",
+        encoding="utf-8",
+    )
+    selected = suite / "test_contract.py"
+    selected.write_text(
+        "def test_first(answer):\n    assert answer == 2\n"
+        "def test_second(answer):\n    assert answer == 2\n",
+        encoding="utf-8",
+    )
+
+    result = run_tests(selected if selected_file else suite, project)
+
+    assert not result.passed and result.return_code == 1, result.output
+    assert result.summary == "2 teste(s): 0 aprovado(s), 2 falho(s), 0 ignorado(s)", result.output
+    assert len(result.diagnostics) == 2
+    assert all("assert 1 == 2" in diagnostic for diagnostic in result.diagnostics)
+
+
+@pytest.mark.parametrize("ambient_options", ["config", "environment"])
+def test_runner_ignores_ambient_extra_collection_paths(tmp_path, monkeypatch, ambient_options):
+    suite = tmp_path / "tests"
+    suite.mkdir()
+    selected = suite / "test_selected.py"
+    selected.write_text("def test_selected():\n    assert True\n", encoding="utf-8")
+    unwanted = tmp_path / "test_unrequested.py"
+    unwanted.write_text("def test_unrequested():\n    assert False\n", encoding="utf-8")
+    if ambient_options == "config":
+        (tmp_path / "pytest.ini").write_text("[pytest]\naddopts = test_unrequested.py\n", encoding="utf-8")
+    else:
+        monkeypatch.setenv("PYTEST_ADDOPTS", "test_unrequested.py")
+
+    result = run_tests(Path("tests"), tmp_path)
+
+    assert result.passed, result.output
+    assert result.summary == "1 teste(s): 1 aprovado(s), 0 falho(s), 0 ignorado(s)"
 
 
 def test_runner_rejects_zero_exit_without_test_report(monkeypatch, tmp_path):
