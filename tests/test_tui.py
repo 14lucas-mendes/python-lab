@@ -123,7 +123,7 @@ def test_tui_runs_passing_and_failing_tests(app, monkeypatch):
             RunnerResult(True, 0, "===== 1 passed =====", summary="1 teste(s): 1 aprovado(s)"),
         ]
     )
-    monkeypatch.setattr(app, "run_current_tests", lambda **kwargs: next(results))
+    monkeypatch.setattr("python_lab.app.run_tests", lambda *args, **kwargs: next(results))
 
     async def scenario(tui, pilot):
         await _submit(tui, pilot, "/test")
@@ -132,14 +132,14 @@ def test_tui_runs_passing_and_failing_tests(app, monkeypatch):
         assert "falha visível" not in _transcript(tui)
         await _submit(tui, pilot, "/test details")
         assert "falha visível" in _transcript(tui)
-        assert tui.last_test_result is not None
-        assert tui.last_test_result.passed is False
+        assert app.last_test_result() is not None
+        assert app.last_test_result().passed is False
 
         await _submit(tui, pilot, "/test")
         await _wait_tests(tui, pilot)
         assert "passaram" in _transcript(tui)
-        assert tui.last_test_result is not None
-        assert tui.last_test_result.passed is True
+        assert app.last_test_result() is not None
+        assert app.last_test_result().passed is True
 
     _drive(app, scenario)
 
@@ -309,7 +309,9 @@ def test_tui_unreadable_fingerprint_keeps_composer_available(app, monkeypatch):
         raise PermissionError("sem permissão")
     monkeypatch.setattr("python_lab.app.solution_fingerprint", fail)
     async def scenario(tui, pilot):
-        assert "sem permissão" in _transcript(tui)
+        assert app.tests_are_current() is False
+        assert "[ ] Testes atuais" in str(tui.query_one("#stages", Static).renderable)
+        assert "/test" in str(tui.query_one("#actions", Static).renderable)
         await _submit(tui, pilot, "/help")
         assert "Comandos" in _transcript(tui)
         await pilot.press("q")
@@ -350,7 +352,7 @@ def test_worker_cancellation_waits_for_real_process_cleanup(app, tmp_path):
         assert not tui._testing, "Cancellation never completed process cleanup"
         assert_tree_stopped(tmp_path)
         assert not tui.query_one("#composer", Composer).disabled
-        assert tui.last_test_result is None
+        assert app.last_test_result() is None
         assert not app.current_progress().tests_passed
         assert not app.current_progress().attempt_history
         assert not app.repository.load().missions["001"].tests_passed
@@ -525,14 +527,14 @@ def test_late_worker_cancel_preserves_accepted_completion(app, monkeypatch, phas
             assert not saved.tests_passed and not progress.tests_passed
             assert saved.attempts == progress.attempts == 0
             assert not saved.attempt_history and not progress.attempt_history
-            assert app.last_test_result() is None and tui.last_test_result is None
+            assert app.last_test_result() is None
         else:
             assert "passaram" in _transcript(tui)
             assert saved.tests_passed and progress.tests_passed
             assert saved.attempts == progress.attempts == 1
             assert saved.attempt_history == progress.attempt_history
             assert len(saved.attempt_history) == 1 and saved.attempt_history[0]["passed"]
-            assert app.last_test_result() is accepted and tui.last_test_result is accepted
+            assert app.last_test_result() is accepted
 
     _drive(app, scenario)
 

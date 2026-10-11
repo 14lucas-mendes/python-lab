@@ -158,7 +158,7 @@ def test_eof_inside_classic_input_closes_without_partial_mutation(app, monkeypat
     assert not log.is_open
 
 
-def test_classic_unreadable_fingerprint_surfaces_error_before_prompt(app, monkeypatch):
+def test_classic_unreadable_fingerprint_guides_retest_before_prompt(app, monkeypatch):
     from python_lab.cli import _run_classic
     from rich.console import Console
 
@@ -173,7 +173,8 @@ def test_classic_unreadable_fingerprint_surfaces_error_before_prompt(app, monkey
     monkeypatch.setattr(Console, "input", lambda *args: "/exit")
     console = Console(record=True)
     assert _run_classic(app, None, console) == 0
-    assert "sem permissão" in console.export_text()
+    assert app.tests_are_current() is False
+    assert "Execute /test novamente para a solução atual" in console.export_text()
 
 
 def test_session_start_failure_keeps_classic_available(app, monkeypatch, capsys):

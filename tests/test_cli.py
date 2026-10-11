@@ -141,9 +141,8 @@ def test_test_output_survives_unencodable_characters(app, monkeypatch):
     cli.execute("/start 001")
     app.save_plan({"input": "x", "output": "y", "steps": "z", "risks": "w"})
     monkeypatch.setattr(
-        app,
-        "run_current_tests",
-        lambda: RunnerResult(False, 1, "erro \ufffd utf-8", summary="1 falho"),
+        "python_lab.app.run_tests",
+        lambda *args, **kwargs: RunnerResult(False, 1, "erro \ufffd utf-8", summary="1 falho"),
     )
 
     assert cli.execute("/test") is True
@@ -157,9 +156,8 @@ def test_test_output_treats_student_text_as_literal(app, monkeypatch):
     cli.execute("/start 001")
     app.save_plan({"input": "x", "output": "y", "steps": "z", "risks": "w"})
     monkeypatch.setattr(
-        app,
-        "run_current_tests",
-        lambda: RunnerResult(False, 1, "ValueError: [/audit]"),
+        "python_lab.app.run_tests",
+        lambda *args, **kwargs: RunnerResult(False, 1, "ValueError: [/audit]"),
     )
 
     assert cli.execute("/test") is True
@@ -258,9 +256,8 @@ def test_passing_tests_hide_raw_pytest_output(app, monkeypatch):
     cli.execute("/start 001")
     app.save_plan({"input": "x", "output": "y", "steps": "z", "risks": "w"})
     monkeypatch.setattr(
-        app,
-        "run_current_tests",
-        lambda: RunnerResult(True, 0, "===== 2 passed =====", summary="2 teste(s): 2 aprovado(s)"),
+        "python_lab.app.run_tests",
+        lambda *args, **kwargs: RunnerResult(True, 0, "===== 2 passed =====", summary="2 teste(s): 2 aprovado(s)"),
     )
     assert cli.execute("/test") is True
     output = console.export_text()
@@ -371,7 +368,9 @@ def test_unreadable_fingerprint_is_actionable_without_incrementing_attempt(app, 
     cli = PythonLabCLI(app, console)
     assert cli.execute("/status") is True
     assert cli.execute("/help") is True
-    assert "sem permissão" in console.export_text()
+    assert app.tests_are_current() is False
+    assert app.current_progress().attempts == 0
+    assert "Execute /test novamente para a solução atual" in console.export_text()
 
 
 def test_removed_active_mission_is_actionable(app):

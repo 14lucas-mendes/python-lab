@@ -38,13 +38,6 @@ def validate_active_mission(progress: AppProgress, missions: list[Mission]) -> N
         )
 
 
-def _solution_fingerprint(path: Path) -> str | None:
-    try:
-        return solution_fingerprint(path)
-    except OSError as exc:
-        raise ApplicationError(f"Não foi possível ler a solução: {path}: {exc}") from exc
-
-
 @dataclass(frozen=True)
 class StatusSnapshot:
     current_mission_id: str | None
@@ -154,8 +147,13 @@ class PythonLabApp:
         if not plan_is_complete(progress.plan):
             raise ApplicationError("Planejamento incompleto: registre /plan antes de testar")
         chosen = solution_path or mission.solution_path
-        chosen_path = Path(chosen).resolve()
-        fingerprint = _solution_fingerprint(chosen_path)
+        try:
+            chosen_path = Path(chosen).resolve()
+            fingerprint = solution_fingerprint(chosen_path)
+        except OSError as exc:
+            raise ApplicationError(
+                f"Não foi possível ler a solução; tente novamente: {chosen}: {exc}"
+            ) from exc
         try:
             result = run_tests(mission.test_path, self.project_root, chosen, cancel=cancel)
         except ProcessCleanupError as exc:
@@ -246,7 +244,12 @@ class PythonLabApp:
         progress = self.current_progress()
         if not progress.tests_passed or not progress.tested_solution_path:
             return False
-        current_fingerprint = _solution_fingerprint(Path(progress.tested_solution_path))
+        try:
+            current_fingerprint = solution_fingerprint(Path(progress.tested_solution_path))
+        except OSError:
+            # Editors can replace or temporarily lock files while the TUI refreshes.
+            # An unreadable solution cannot establish that the approval is current.
+            return False
         return (
             progress.tested_solution_fingerprint is not None
             and current_fingerprint == progress.tested_solution_fingerprint

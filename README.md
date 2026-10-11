@@ -331,3 +331,14 @@ bot local e fixture HTML, sem chaves ou requisições externas após a instalaç
 São nove venvs independentes: os sete templates e duas regressões de tokens
 literais nos nomes CLI/FastAPI. A execução independente de um wheel do
 Lab ainda não é coberta: o catálogo de missões exige o checkout editável.
+
+## Fluxo de contribuições
+
+As alterações do projeto seguem este fluxo:
+
+1. Criar uma nova branch a partir da `main` atualizada.
+2. Implementar e validar as mudanças, preservando o progresso e as soluções locais do aluno.
+3. Fazer commit, enviar a branch e abrir uma PR contra `main`, com escopo e resultados da validação.
+4. Para correções em uma PR ainda aberta, atualizar sua branch e os resultados da validação, referenciando os comentários atendidos. Após a integração, ou para mudanças independentes, usar uma nova branch e uma nova PR.
+
+Não enviar alterações diretamente para `main`. A integração acontece após a revisão da PR.
