@@ -136,7 +136,7 @@ jobs:
             printf '::error title=Native pytest suite::%s\n' "$diagnostic"
             exit "$suite_status"
           fi
-      - name: Clean-venv template preparation and functional smokes
+      - name: Nine clean-venv template functional smokes
         shell: bash
         env:
           PYTHON_LAB_TEMPLATE_SMOKE: '1'

@@ -66,6 +66,13 @@ exclude = ["python_lab.scaffolding.templates*"]
     "templates/library/src/__package__/__init__.py",
     "templates/library/src/__package__/main.py",
     "templates/library/tests/test_app.py",
+    "templates/scraper/.gitignore",
+    "templates/scraper/README.md",
+    "templates/scraper/pyproject.toml",
+    "templates/scraper/src/__package__/__init__.py",
+    "templates/scraper/src/__package__/main.py",
+    "templates/scraper/tests/fixtures/page.html",
+    "templates/scraper/tests/test_app.py",
 ]
 
 [tool.pytest.ini_options]

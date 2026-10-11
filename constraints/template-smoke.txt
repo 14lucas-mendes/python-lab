@@ -1,4 +1,5 @@
 # Tested Linux CPython 3.12 clean-venv template preparation only.
+# D4 resolved package metadata admits Python 3.11 and 3.12; native runs are separate.
 # Lab core dependencies/ranges and existing core/analysis/SDK constraints are unchanged.
 # Generated pyproject.toml files retain their own dependency ranges.
 annotated-doc==0.0.5
@@ -32,3 +33,4 @@ Django==5.2.7
 tzdata==2025.2
 asgiref==3.12.1
 sqlparse==0.6.0
+colorama==0.4.6

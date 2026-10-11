@@ -13,9 +13,10 @@ TEMPLATES: dict[str, tuple[str, ...]] = {
     "cli": _FILES,
     "fastapi": _FILES,
     "flask": _FILES,
+    "django": (*_FILES, "src/__package__/settings.py"),
     "library": _FILES,
     "bot": _FILES,
-    "django": (*_FILES, "src/__package__/settings.py"),
+    "scraper": (*_FILES, "tests/fixtures/page.html"),
 }
 
 # Distribution -> import namespace for the generated projects' tooling, dev and
@@ -35,6 +36,7 @@ DEPENDENCY_NAMES: dict[str, dict[str, str]] = {
     "cli": dict(_COMMON_DEPENDENCIES),
     "library": dict(_COMMON_DEPENDENCIES),
     "bot": dict(_COMMON_DEPENDENCIES),
+    "scraper": dict(_COMMON_DEPENDENCIES),
     "django": {
         **_COMMON_DEPENDENCIES,
         "django": "django",

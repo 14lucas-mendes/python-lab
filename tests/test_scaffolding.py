@@ -12,9 +12,21 @@ import pytest
 from python_lab.assistant.errors import AssistantError
 
 
-ADDITIONAL_TEMPLATES = ["flask", "django", "library", "bot"]
-README_COMMANDS = {"flask": "-m flask --app example_app.main:app run", "django": "-m example_app.main", "library": "from example_app.main import greet; print(greet('Ana'))", "bot": '-m example_app.main "olá"'}
-CONTRACT_MARKERS = {"flask": "/health", "django": "/health", "library": "Olá, Ana!", "bot": "olá"}
+ADDITIONAL_TEMPLATES = ["flask", "django", "library", "bot", "scraper"]
+README_COMMANDS = {
+    "flask": "-m flask --app example_app.main:app run",
+    "django": "-m example_app.main",
+    "library": "from example_app.main import greet; print(greet('Ana'))",
+    "bot": '-m example_app.main "olá"',
+    "scraper": "-m example_app.main tests/fixtures/page.html",
+}
+CONTRACT_MARKERS = {
+    "flask": "/health",
+    "django": "/health",
+    "library": "Olá, Ana!",
+    "bot": "olá",
+    "scraper": "Olá & Python",
+}
 
 
 def scaffold_api():
@@ -450,3 +462,33 @@ def test_bot_echo_has_local_unicode_contract_and_console_entrypoint(tmp_path):
     test = (result.target / "tests/test_app.py").read_text(encoding="utf-8")
     assert 'echo("olá") == "Eco: olá"' in test
     assert Service().create("bot", tmp_path / "django").target.is_dir()
+
+
+def test_scraper_local_fixture_has_utf8_title_and_console_contract(tmp_path):
+    _, Service, _ = scaffold_api()
+    result = Service().create("scraper", tmp_path / "example")
+    manifest = tomllib.loads((result.target / "pyproject.toml").read_text(encoding="utf-8"))
+    assert manifest["project"]["dependencies"] == []
+    assert manifest["project"]["scripts"] == {"example": "example.main:main"}
+    fixture = result.target / "tests/fixtures/page.html"
+    assert fixture in result.files
+    assert "<title>Olá &amp; Python</title>" in fixture.read_text(encoding="utf-8")
+    assert Service().create("scraper", tmp_path / "django").target.is_dir()
+
+
+@pytest.mark.parametrize("template", ADDITIONAL_TEMPLATES)
+def test_additional_template_token_names_remain_literal(tmp_path, template):
+    _, Service, _ = scaffold_api()
+    name = "app-__distribution__x"
+    package = name.replace("-", "_")
+    result = Service().create(template, tmp_path / name)
+    project = tomllib.loads((result.target / "pyproject.toml").read_text(encoding="utf-8"))
+    assert project["project"]["name"] == name
+    assert result.target / f"src/{package}/main.py" in result.files
+    assert name in (result.target / f"src/{package}/__init__.py").read_text(encoding="utf-8")
+    readme = (result.target / "README.md").read_text(encoding="utf-8")
+    assert package in readme
+    if template == "django":
+        assert f'ROOT_URLCONF = "{package}.main"' in (result.target / f"src/{package}/settings.py").read_text(encoding="utf-8")
+    else:
+        assert f"from {package}.main import " in (result.target / "tests/test_app.py").read_text(encoding="utf-8")
