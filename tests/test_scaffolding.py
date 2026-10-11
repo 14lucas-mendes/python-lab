@@ -12,9 +12,9 @@ import pytest
 from python_lab.assistant.errors import AssistantError
 
 
-ADDITIONAL_TEMPLATES = ["flask"]
-README_COMMANDS = {"flask": "-m flask --app example_app.main:app run"}
-CONTRACT_MARKERS = {"flask": "/health"}
+ADDITIONAL_TEMPLATES = ["flask", "django"]
+README_COMMANDS = {"flask": "-m flask --app example_app.main:app run", "django": "-m example_app.main"}
+CONTRACT_MARKERS = {"flask": "/health", "django": "/health"}
 
 
 def scaffold_api():
@@ -417,3 +417,14 @@ def test_additional_template_native_windows_basename_contract(template):
     from pathlib import PureWindowsPath
     from python_lab.scaffolding.service import _project_package
     assert _project_package(template, PureWindowsPath(r"C:\Users\developer\new projects\my-app")) == "my_app"
+
+
+@pytest.mark.parametrize("name", ["django", "Django", "asgiref", "sqlparse", "tzdata"])
+def test_django_collisions_precede_resource_reads_and_target_creation(tmp_path, monkeypatch, name):
+    _, Service, _ = scaffold_api()
+    def forbidden(*args, **kwargs):
+        pytest.fail("Collision validation must precede resource reads")
+    monkeypatch.setattr(resources, "files", forbidden)
+    with pytest.raises(AssistantError, match="[Cc]onflit"):
+        Service().create("django", tmp_path / name)
+    assert list(tmp_path.iterdir()) == []
