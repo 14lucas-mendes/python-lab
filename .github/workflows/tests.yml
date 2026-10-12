@@ -74,14 +74,22 @@ jobs:
           else
             migration_status=$?
             cat "$migration_log"
-            printf '::error title=Populated legacy CLI migration::Migration proof failed (exit %s); see retained bounded metadata log.\n' "$migration_status"
+            diagnostic="$(cat "$migration_log")"
+            if (( ${#diagnostic} > 6000 )); then
+              diagnostic="${diagnostic: -6000}"
+            fi
+            diagnostic="populated migration exit: $migration_status"$'\n'"$diagnostic"
+            diagnostic="${diagnostic//%/%25}"
+            diagnostic="${diagnostic//$'\r'/%0D}"
+            diagnostic="${diagnostic//$'\n'/%0A}"
+            printf '::error title=Populated legacy CLI migration::%s\n' "$diagnostic"
             exit "$migration_status"
           fi
       - name: Base assistant and classic checks without optional extras
         shell: bash
         run: |
           base_log="$RUNNER_TEMP/python-lab-base-assistant.log"
-          if "$PYTHON" -m pytest -q tests/test_assistant_cli.py tests/test_assistant_tui.py tests/test_assistant_journey.py tests/test_requested_assistance_display.py tests/test_populated_migration_smoke.py tests/test_learning_cli.py tests/test_learning_tui.py tests/test_review_cli.py tests/test_review_tui.py tests/test_scaffolding_cli.py tests/test_review_adapter_failures.py tests/test_cli_entrypoint.py::test_classic_without_assistant_extra > "$base_log" 2>&1; then
+          if "$PYTHON" -m pytest -q tests/test_assistant_cli.py tests/test_assistant_tui.py tests/test_assistant_journey.py tests/test_requested_assistance_display.py tests/test_populated_migration_smoke.py tests/test_legacy_fixture_checkout.py tests/test_learning_cli.py tests/test_learning_tui.py tests/test_review_cli.py tests/test_review_tui.py tests/test_scaffolding_cli.py tests/test_review_adapter_failures.py tests/test_cli_entrypoint.py::test_classic_without_assistant_extra > "$base_log" 2>&1; then
             cat "$base_log"
           else
             base_status=$?
@@ -112,7 +120,7 @@ jobs:
         run: |
           sdk_log="$RUNNER_TEMP/python-lab-offline-sdk.log"
           sdk_xml="$RUNNER_TEMP/python-lab-offline-sdk.xml"
-          if "$PYTHON" -m pytest -q tests/test_analysis.py tests/test_assistant_provider.py tests/test_assistant_cli.py tests/test_assistant_tui.py tests/test_assistant_journey.py tests/test_requested_assistance_display.py tests/test_populated_migration_smoke.py tests/test_learning_cli.py tests/test_learning_tui.py tests/test_review_cli.py tests/test_review_tui.py tests/test_scaffolding_cli.py tests/test_review_adapter_failures.py --junitxml="$sdk_xml" > "$sdk_log" 2>&1; then
+          if "$PYTHON" -m pytest -q tests/test_analysis.py tests/test_assistant_provider.py tests/test_assistant_cli.py tests/test_assistant_tui.py tests/test_assistant_journey.py tests/test_requested_assistance_display.py tests/test_populated_migration_smoke.py tests/test_legacy_fixture_checkout.py tests/test_learning_cli.py tests/test_learning_tui.py tests/test_review_cli.py tests/test_review_tui.py tests/test_scaffolding_cli.py tests/test_review_adapter_failures.py --junitxml="$sdk_xml" > "$sdk_log" 2>&1; then
             cat "$sdk_log"
           else
             sdk_status=$?

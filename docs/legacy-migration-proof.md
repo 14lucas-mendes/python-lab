@@ -41,6 +41,8 @@ cópias byte a byte dessas escritas; `provenance.json` registra comandos e SHA-2
 Datas, IDs e caminhos temporários foram mantidos como o legado os escreveu.
 Repetir a geração terá outras datas/IDs/caminhos e, portanto, outros hashes.
 Não é necessário ter o histórico Git completo para executar a prova no CI.
+O atributo Git `-text` é restrito aos JSON desse fixture: impede que um checkout
+Windows com `core.autocrlf=true` altere seus bytes e invalide os hashes de origem.
 
 A partir do checkout instalado:
 
