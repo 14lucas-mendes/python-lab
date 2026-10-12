@@ -1,0 +1,31 @@
+{
+  "current_mission_id": "001",
+  "missions": {
+    "001": {
+      "status": "started",
+      "plan": {
+        "input": "records",
+        "output": "totals",
+        "steps": "accumulate",
+        "risks": "empty input"
+      },
+      "attempts": 1,
+      "tests_passed": false,
+      "hints_revealed": 2,
+      "reference_viewed": false,
+      "explanation": null,
+      "tested_solution_path": "/tmp/python-lab-real-legacy-k0pvn_zx/missions/001-consolidar-falhas/starter.py",
+      "tested_solution_fingerprint": "2362f759d769b8f36bc52462c175b62a85a925ee711d90eb979f92a422d2aa2e",
+      "attempt_history": [
+        {
+          "timestamp": "2026-10-12T00:40:37.488206+00:00",
+          "passed": false,
+          "return_code": 1,
+          "summary": "6 teste(s): 0 aprovado(s), 6 falho(s), 0 ignorado(s)",
+          "solution_path": "/tmp/python-lab-real-legacy-k0pvn_zx/missions/001-consolidar-falhas/starter.py"
+        }
+      ]
+    }
+  },
+  "evidence": []
+}

@@ -283,6 +283,23 @@ lab migrate --from-dir .\data --data-dir C:\MeusDados\python-lab
 
 A importação preserva os JSON e cria backups; repetir a mesma importação não duplica os registros. Não faça commit dos dados reais.
 
+Prova reproduzível de migração populada (sem alterar os arquivos de origem):
+
+```bash
+python scripts/populated_migration_smoke.py
+# Opcional: exercitar o executável instalado em vez de lab.py
+python scripts/populated_migration_smoke.py --cli .venv/bin/lab
+```
+
+O smoke usa cópias temporárias do fixture controlado em `tests/fixtures/legacy-populated`,
+gerado pelo aplicativo legado real (`d7a890458ec072aee7ee6ab17d2d24a621f9de2a`),
+com planejamento, um teste que falha e pistas em duas sessões. A proveniência e os
+comandos estão em [docs/legacy-migration-proof.md](docs/legacy-migration-proof.md).
+Ele executa a CLI atual duas vezes e compara todo o progresso, as inferências de
+ajuda/identidade legadas, sessões/eventos, backups e linhas SQLite. O CI executa a
+mesma prova nos quatro ambientes nativos e retém somente contagens, hashes e resultados.
+O fixture é representativo gerado, não um perfil pessoal nem evidência de missão concluída.
+
 Para ajuda fora da sessão, use `lab --help`. O ambiente suportado é Python 3.11 ou mais recente; pytest é instalado pelo extra `dev` e é necessário para executar as missões.
 
 ## Desenvolvimento e validação

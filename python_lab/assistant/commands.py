@@ -130,6 +130,7 @@ class AssistantCommands:
                 raise AssistantError("Serviço de revisão indisponível.")
             result = await self.review_factory().review(request, cancel=action_cancel, attempt_id=attempt_id)
             data = asdict(result)
+            data["requested_assistance_level"] = request.level
             previews = []
             lines = ["Revisão local concluída; sugestões não são verificação executada."]
             for check in result.analysis.checks:
@@ -138,7 +139,7 @@ class AssistantCommands:
             if result.advice is None:
                 lines.append("IA indisponível: configure provider, model, LAB_API_KEY e o extra assistant.")
             else:
-                lines.extend((f"Ajuda nível {result.advice.assistance_level}", result.advice.summary, result.advice.explanation))
+                lines.extend((f"Ajuda nível {request.level}", result.advice.summary, result.advice.explanation))
             for patch in result.proposals:
                 diff = await self._blocking(lambda: self.patches.preview(patch), action_cancel)
                 destination = str(self.workspace.root / patch.change.path)
@@ -393,7 +394,8 @@ class AssistantCommands:
             service = self._service()
             answer = await service.execute(request, cancel=action_cancel, attempt_id=attempt_id)
             data = asdict(answer)
-            sections = [answer.summary, answer.explanation, "\n".join(answer.steps), f"Ajuda nível {answer.assistance_level}"]
+            data["requested_assistance_level"] = request.level
+            sections = [answer.summary, answer.explanation, "\n".join(answer.steps), f"Ajuda nível {request.level}"]
             references = ", ".join(
                 f"{ref.path}:{ref.start_line}" +
                 (f"-{ref.end_line}" if ref.end_line != ref.start_line else "")

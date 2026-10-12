@@ -173,10 +173,17 @@ def test_tui_verify_cancellation_keeps_slot_until_actual_process_cleanup(app, tm
             async with tui.run_test() as pilot:
                 await pilot.pause()
                 tui._submit(f'/verify {patch.id} --check pytest')
-                deadline = time.monotonic() + 10
+                # Cold Windows pytest plus its child interpreter can take more
+                # than ten seconds. Stay below the production pytest timeout.
+                deadline = time.monotonic() + 25
                 while not (project / 'ready').exists() and time.monotonic() < deadline:
+                    if tui._assistant_task is None:
+                        break
                     await asyncio.sleep(.01)
-                assert (project / 'ready').exists()
+                assert (project / 'ready').exists(), (
+                    'pytest descendant did not become ready; TUI transcript:\n'
+                    + '\n'.join(tui.transcript_entries)
+                )
                 tui._submit('/cancel')
                 assert await asyncio.to_thread(cleaned.wait, 5)
                 assert_tree_stopped(project)

@@ -64,11 +64,24 @@ jobs:
           smoke version "$LAB" --version
           smoke practice "$LAB" practice --json --data-dir "$RUNNER_TEMP/python-lab-practice-state"
           printf '/missions\n/exit\n' | smoke classic "$LAB" --classic --data-dir "$RUNNER_TEMP/python-lab-state"
+      - name: Populated legacy application snapshot migration via installed CLI
+        shell: bash
+        run: |
+          migration_log="$RUNNER_TEMP/python-lab-populated-migration.log"
+          migration_json="$RUNNER_TEMP/python-lab-populated-migration.json"
+          if "$PYTHON" scripts/populated_migration_smoke.py --cli "$LAB" --metadata "$migration_json" > "$migration_log" 2>&1; then
+            cat "$migration_log"
+          else
+            migration_status=$?
+            cat "$migration_log"
+            printf '::error title=Populated legacy CLI migration::Migration proof failed (exit %s); see retained bounded metadata log.\n' "$migration_status"
+            exit "$migration_status"
+          fi
       - name: Base assistant and classic checks without optional extras
         shell: bash
         run: |
           base_log="$RUNNER_TEMP/python-lab-base-assistant.log"
-          if "$PYTHON" -m pytest -q tests/test_assistant_cli.py tests/test_assistant_tui.py tests/test_assistant_journey.py tests/test_learning_cli.py tests/test_learning_tui.py tests/test_review_cli.py tests/test_review_tui.py tests/test_scaffolding_cli.py tests/test_review_adapter_failures.py tests/test_cli_entrypoint.py::test_classic_without_assistant_extra > "$base_log" 2>&1; then
+          if "$PYTHON" -m pytest -q tests/test_assistant_cli.py tests/test_assistant_tui.py tests/test_assistant_journey.py tests/test_requested_assistance_display.py tests/test_populated_migration_smoke.py tests/test_learning_cli.py tests/test_learning_tui.py tests/test_review_cli.py tests/test_review_tui.py tests/test_scaffolding_cli.py tests/test_review_adapter_failures.py tests/test_cli_entrypoint.py::test_classic_without_assistant_extra > "$base_log" 2>&1; then
             cat "$base_log"
           else
             base_status=$?
@@ -99,7 +112,7 @@ jobs:
         run: |
           sdk_log="$RUNNER_TEMP/python-lab-offline-sdk.log"
           sdk_xml="$RUNNER_TEMP/python-lab-offline-sdk.xml"
-          if "$PYTHON" -m pytest -q tests/test_analysis.py tests/test_assistant_provider.py tests/test_assistant_cli.py tests/test_assistant_tui.py tests/test_assistant_journey.py tests/test_learning_cli.py tests/test_learning_tui.py tests/test_review_cli.py tests/test_review_tui.py tests/test_scaffolding_cli.py tests/test_review_adapter_failures.py --junitxml="$sdk_xml" > "$sdk_log" 2>&1; then
+          if "$PYTHON" -m pytest -q tests/test_analysis.py tests/test_assistant_provider.py tests/test_assistant_cli.py tests/test_assistant_tui.py tests/test_assistant_journey.py tests/test_requested_assistance_display.py tests/test_populated_migration_smoke.py tests/test_learning_cli.py tests/test_learning_tui.py tests/test_review_cli.py tests/test_review_tui.py tests/test_scaffolding_cli.py tests/test_review_adapter_failures.py --junitxml="$sdk_xml" > "$sdk_log" 2>&1; then
             cat "$sdk_log"
           else
             sdk_status=$?
@@ -186,5 +199,6 @@ jobs:
           path: |
             ${{ runner.temp }}/python-lab-*.log
             ${{ runner.temp }}/python-lab-*.xml
+            ${{ runner.temp }}/python-lab-populated-migration.json
           if-no-files-found: ignore
           retention-days: 7

@@ -1,0 +1,63 @@
+{
+  "sessions": [
+    {
+      "id": "20261012T004037039575",
+      "started_at": "2026-10-12T00:40:37.039575+00:00",
+      "ended_at": "2026-10-12T00:40:37.493977+00:00",
+      "events": [
+        {
+          "timestamp": "2026-10-12T00:40:37.083733+00:00",
+          "command": "/start 001",
+          "summary": "Missão 001 iniciada"
+        },
+        {
+          "timestamp": "2026-10-12T00:40:37.086168+00:00",
+          "command": "/plan",
+          "summary": "Planejamento registrado"
+        },
+        {
+          "timestamp": "2026-10-12T00:40:37.490527+00:00",
+          "command": "/test",
+          "summary": "Testes falharam"
+        },
+        {
+          "timestamp": "2026-10-12T00:40:37.491822+00:00",
+          "command": "/hint",
+          "summary": "Pista liberada"
+        },
+        {
+          "timestamp": "2026-10-12T00:40:37.492889+00:00",
+          "command": "/status",
+          "summary": "Status exibido"
+        },
+        {
+          "timestamp": "2026-10-12T00:40:37.493794+00:00",
+          "command": "/exit",
+          "summary": "Sessão encerrada"
+        }
+      ]
+    },
+    {
+      "id": "20261012T004037833732",
+      "started_at": "2026-10-12T00:40:37.833732+00:00",
+      "ended_at": "2026-10-12T00:40:37.847956+00:00",
+      "events": [
+        {
+          "timestamp": "2026-10-12T00:40:37.844147+00:00",
+          "command": "/hint",
+          "summary": "Pista liberada"
+        },
+        {
+          "timestamp": "2026-10-12T00:40:37.845822+00:00",
+          "command": "/status",
+          "summary": "Status exibido"
+        },
+        {
+          "timestamp": "2026-10-12T00:40:37.847158+00:00",
+          "command": "/exit",
+          "summary": "Sessão encerrada"
+        }
+      ]
+    }
+  ]
+}
