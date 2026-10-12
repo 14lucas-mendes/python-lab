@@ -181,3 +181,20 @@ HelpScreen {
     padding: 1 0;
     color: $foreground;
 }
+
+#assistant-cancel {
+    display: none;
+    height: auto;
+    margin: 0 2;
+    color: #ef4444;
+    border: solid #ef4444;
+}
+
+#patch-scroll {
+    height: 16;
+    max-height: 60vh;
+}
+
+#patch-diff {
+    height: auto;
+}

@@ -1,6 +1,14 @@
 import argparse
+import asyncio
+from contextlib import redirect_stderr
+from io import StringIO
+import json
+from importlib import metadata
+import sqlite3
 import sys
+import threading
 from pathlib import Path
+from uuid import uuid4
 from typing import Sequence
 
 from rich.console import Console
@@ -8,66 +16,38 @@ from rich.markdown import Markdown
 from rich.panel import Panel
 from rich.table import Table
 
-from python_lab.app import ApplicationError, PythonLabApp
-from python_lab.catalog import CatalogError, load_goal, load_missions, load_roadmap, load_skills
+from python_lab.assistant.commands import AssistantCommands
+from python_lab.assistant.errors import AssistantError, ContextError
+from python_lab.assistant.history import ConversationRepository
+from python_lab.assistant.openai_provider import OpenAIProvider
+from python_lab.assistant.settings import load_settings
+from python_lab.assistant.service import AssistantService
+from python_lab.assistant.review import ReviewService
+from python_lab.assistant.patches import PatchService
+from python_lab.assistant.verification import VerificationService, VerificationStore
+from python_lab.runtime.processes import ProcessRunner
+from python_lab.analysis.service import AnalysisService
+from python_lab.workspace import Workspace
+from python_lab.app import ActiveMissionError, ApplicationError, PythonLabApp
+from python_lab.commands import COMMANDS, DEFAULT_SUMMARIES, CommandDispatcher, CommandResult, parse_command
+from python_lab.catalog import CatalogError, load_catalog, load_goal, load_roadmap, load_skills
+from python_lab.learning_commands import LEARNING_ACTIONS, LearningCommands
+from python_lab.exercises.service import ExerciseService
 from python_lab.learning import CompletionError, HintError, LearningError
 from python_lab.progress import ProgressError, ProgressRepository
-from python_lab.presentation import test_feedback
+from python_lab.presentation import encoding_safe_console, test_feedback
 from python_lab.session import SessionError, SessionLog
+from python_lab.storage.codecs import decode_progress, decode_sessions
+from python_lab.storage.database import connection, has_user_state
+from python_lab.storage.migration import migrate_json_state
+from python_lab.storage.paths import resolve_paths
 from python_lab.tui.app import PythonLabTUI
 
 
-COMMANDS = (
-    ("/goal", "/g", "Exibir objetivo e critérios de sucesso"),
-    ("/skills", "/sk", "Exibir mapa de competências e evidências"),
-    ("/missions", "/ms", "Listar missões e estados"),
-    ("/start <id>", "", "Iniciar ou repetir uma missão desbloqueada"),
-    ("/mission [id]", "", "Consultar o enunciado sem iniciar a missão"),
-    ("/concepts [id]", "", "Consultar apoio conceitual opcional"),
-    ("/plan", "/p", "Registrar ou revisar o planejamento"),
-    ("/test", "/t", "Executar os testes da missão atual"),
-    ("/test details", "", "Consultar a saída completa sem nova tentativa"),
-    ("/hint", "/h", "Liberar a próxima pista"),
-    ("/explain", "/e", "Registrar a explicação final"),
-    ("/status", "/st", "Exibir estado da sessão"),
-    ("/history", "/hi", "Exibir histórico de tentativas da missão atual"),
-    ("/session", "/se", "Exibir o histórico desta sessão"),
-    ("/evidence", "/ev", "Exibir evidências de competências"),
-    ("/help", "/?", "Listar comandos disponíveis"),
-    ("/exit", "/q", "Salvar e encerrar com segurança"),
-)
+ASSISTANT_ACTIONS = {"/check", "/explain-code", "/diagnose", "/review", "/apply", "/verify", "/new"}
+EXTERNAL_ACTIONS = {"explain", "diagnose", "check", "review", "apply", "verify", "new", "practice", "exercises"}
+ASYNC_ACTIONS = ASSISTANT_ACTIONS | LEARNING_ACTIONS
 
-ALIASES = {
-    "/g": "/goal",
-    "/sk": "/skills",
-    "/ms": "/missions",
-    "/p": "/plan",
-    "/t": "/test",
-    "/h": "/hint",
-    "/e": "/explain",
-    "/st": "/status",
-    "/hi": "/history",
-    "/se": "/session",
-    "/ev": "/evidence",
-    "/?": "/help",
-    "/q": "/exit",
-}
-
-DEFAULT_SUMMARIES = {
-    "/goal": "Goal exibido",
-    "/skills": "Skills exibidas",
-    "/missions": "Missões listadas",
-    "/mission": "Enunciado consultado",
-    "/concepts": "Apoio conceitual consultado",
-    "/plan": "Planejamento registrado",
-    "/hint": "Pista liberada",
-    "/status": "Status exibido",
-    "/history": "Histórico de tentativas exibido",
-    "/session": "Histórico da sessão exibido",
-    "/evidence": "Evidências exibidas",
-    "/help": "Ajuda exibida",
-    "/exit": "Sessão encerrada",
-}
 
 SKILL_LABELS = {
     "practicing": "Em prática",
@@ -89,17 +69,79 @@ EVIDENCE_RESULT_LABELS = {
 }
 
 
+class AssistantRuntime:
+    """One lazy provider and output budget for one local process/session."""
+
+    def __init__(self, data_dir: Path, app: PythonLabApp | None = None):
+        self.data_dir = data_dir
+        self.app = app
+        self.provider = None
+        self.service = None
+
+    def get_service(self):
+        if self.service is None:
+            settings = load_settings(self.data_dir)
+            self.provider = OpenAIProvider(settings)
+            self.service = AssistantService(
+                self.provider, AnalysisService(),
+                ConversationRepository(self.data_dir / "lab.sqlite3"),
+                on_full_solution=self.app.record_full_solution if self.app else None,
+                on_assistance=self.app.record_assistance if self.app else None,
+                capture_attempt=self.app.capture_assistance_attempt if self.app else None,
+            )
+        return self.service
+
+    def commands(self, workspace, mode, *, app=None, service=None):
+        return _assistant_commands(workspace, mode, self.data_dir, self.get_service,
+                                   app=app, service=service)
+
+    async def aclose(self):
+        if self.provider is not None:
+            await self.provider.aclose()
+
+
+def _assistant_commands(workspace, mode, data_dir, service_factory, *, app=None, service=None):
+    """Adapt the existing get_service/aclose runtime contract without new requirements."""
+    patches = PatchService(workspace, data_dir)
+    def review_service():
+        try:
+            assistant = service or service_factory()
+        except AssistantError:
+            assistant = None
+        return ReviewService(AnalysisService(), assistant.provider if assistant else None,
+                             patches, ConversationRepository(data_dir / "lab.sqlite3"),
+                             on_assistance=app.record_assistance if app else None,
+                             capture_attempt=app.capture_assistance_attempt if app else None)
+    return AssistantCommands(service, workspace, mode, app=app,
+        service_factory=service_factory, patches=patches,
+        verification=VerificationService(ProcessRunner(), store=VerificationStore(data_dir)),
+        review_factory=review_service)
+
+
 class PythonLabCLI:
     def __init__(
         self,
         app: PythonLabApp,
         console: Console | None = None,
         session_log: SessionLog | None = None,
+        assistant_project: Path | None = None,
+        assistant_runtime: AssistantRuntime | None = None,
+        assistant_mode: str = "assistant",
+        mode_explicit: bool = False,
     ) -> None:
         self.app = app
-        self.console = console or Console()
+        self.console = encoding_safe_console(console or Console())
         self.session_log = session_log
         self._last_summary = ""
+        self.assistant_project = assistant_project.resolve() if assistant_project else None
+        self.assistant_mode = assistant_mode
+        self._assistant_mode_explicit = mode_explicit or assistant_mode != "assistant"
+        self.assistant_runtime = assistant_runtime or AssistantRuntime(app.repository.path.parent, app)
+        self._runner = None
+        self._classic_loop = None
+        self._classic_thread = None
+        self._classic_action = None
+        self.learning = None
         self.handlers = {
             "/goal": self.show_goal,
             "/skills": self.show_skills,
@@ -118,53 +160,231 @@ class PythonLabCLI:
             "/help": self.help,
             "/exit": self.exit,
         }
+        self.dispatcher = CommandDispatcher()
+        for name, handler in self.handlers.items():
+            self.dispatcher.register(name, self._adapt_handler(handler))
+        self.dispatcher.register("/practice", lambda args: self.learning_handlers().practice(args))
+        for name in ASYNC_ACTIONS:
+            async def action(args, name=name):
+                return await self.action_handlers(name).actions()[name](args)
+            self.dispatcher.register_async(name, action)
+
+    def learning_handlers(self, *, service=None):
+        if self.learning is None:
+            data_dir = getattr(self.assistant_runtime, "data_dir", self.app.repository.path.parent)
+            self.learning = LearningCommands(self.app, None, ExerciseService(
+                data_dir, ProcessRunner(), catalog_dir=self.app.project_root),
+                workspace=self.assistant_project or self.app.project_root,
+                mode=self.effective_assistant_mode())
+        self.learning.provider_factory = lambda: (service.provider if service is not None
+                                                   else self.assistant_runtime.get_service().provider)
+        self.learning.workspace = self.assistant_project or self.app.project_root
+        self.learning.mode = self.effective_assistant_mode()
+        return self.learning
+
+    def action_handlers(self, name, *, service=None):
+        return self.learning_handlers(service=service) if name in LEARNING_ACTIONS else self.assistant_handlers(service=service)
+
+    def assistant_handlers(self, *, service=None):
+        data_dir = getattr(self.assistant_runtime, "data_dir", self.app.repository.path.parent)
+        return _assistant_commands(Workspace(self.assistant_project or Path.cwd()),
+                                   self.effective_assistant_mode(), data_dir,
+                                   self.assistant_runtime.get_service, app=self.app, service=service)
+
+
+    def _adapt_handler(self, handler):
+        def invoke(args: tuple[str, ...]) -> CommandResult:
+            keep_running = handler(" ".join(args))
+            return CommandResult(True, self._last_summary, {}, exit_requested=not keep_running)
+        return invoke
 
     def execute(self, command_line: str) -> bool:
-        stripped = command_line.strip()
-        if not stripped:
+        if not command_line.strip():
             return True
-        parts = stripped.split(maxsplit=1)
-        raw_command = parts[0].lower()
-        argument = parts[1] if len(parts) > 1 else ""
-        if not raw_command.startswith("/"):
-            suggested = f"/{raw_command}"
-            if suggested in self.handlers or suggested in ALIASES:
-                message = f"Comando desconhecido. Use {suggested}. Digite /help para a lista."
-            else:
-                message = "Comando desconhecido. Digite /help para a lista."
-            self.console.print(message)
-            self._record(raw_command, "Comando desconhecido")
+        try:
+            parsed = parse_command(command_line)
+        except ValueError as exc:
+            self.console.print(str(exc), style="red", markup=False)
+            self._record(command_line, str(exc))
             return True
-        command = ALIASES.get(raw_command, raw_command)
-        handler = self.handlers.get(command)
-        if handler is None:
-            self.console.print("Comando desconhecido. Digite /help para a lista.")
-            self._record(raw_command, "Comando desconhecido")
+        command = parsed.name
+        if command in {"/project", "/mode"}:
+            return self._local_assistant_setting(command, parsed.args)
+        if command in ASYNC_ACTIONS:
+            return self._execute_assistant(parsed)
+        if command == "/cancel":
+            self.cancel_classic_action()
             return True
         self._last_summary = DEFAULT_SUMMARIES.get(command, f"{command} executado")
-        display = f"{command} {argument}".strip()
+        display = " ".join((command, *parsed.args)).strip()
         try:
-            result = handler(argument)
+            result = self.dispatcher.dispatch(parsed)
+        except (EOFError, KeyboardInterrupt):
+            return self.exit()
         except (ApplicationError, LearningError, ProgressError, SessionError) as exc:
             self.console.print(str(exc), style="red", markup=False)
             self._record(display, str(exc))
             self._print_next_step()
             return True
-        self._record(display, self._last_summary)
-        if result:
+        if not result.ok:
+            self.console.print(result.message, markup=False)
+            self._record(display, "Comando desconhecido")
+        elif not result.exit_requested:
+            if command == "/practice":
+                self.console.print(result.message, markup=False)
+            self._record(display, result.message)
             if command != "/status":
                 self._print_next_step()
-        elif self.session_log is not None:
-            self.session_log.close()
-        return result
+        return not result.exit_requested
+
+    def _local_assistant_setting(self, command: str, args: tuple[str, ...]) -> bool:
+        if command == "/mode":
+            if len(args) != 1 or args[0] not in {"assistant", "tutor"}:
+                self.console.print("Uso: /mode assistant|tutor", markup=False)
+            else:
+                self.assistant_mode = args[0]
+                self._assistant_mode_explicit = True
+                self.console.print(f"Modo: {self.assistant_mode}", markup=False)
+            return True
+        if len(args) != 1:
+            self.console.print("Uso: /project <diretório>|off", markup=False)
+            return True
+        if args[0] == "off":
+            self.assistant_project = None
+            self.console.print("Missões disponíveis.", markup=False)
+            return True
+        try:
+            self.assistant_project = Workspace(Path(args[0])).root
+        except ContextError as exc:
+            self.console.print(str(exc), markup=False)
+            return True
+        self.console.print(f"Projeto: {self.assistant_project}", markup=False)
+        return True
+
+    def effective_assistant_mode(self) -> str:
+        if self._assistant_mode_explicit:
+            return self.assistant_mode
+        return "tutor" if self.app.progress.current_mission_id else "assistant"
+
+    def _execute_assistant(self, parsed) -> bool:
+        try:
+            handlers = self.action_handlers(parsed.name)
+            if self._runner is None:
+                self._runner = asyncio.Runner()
+            handler = handlers.actions()[parsed.name]
+            action_id = uuid4().hex
+            result = self._runner.run(handler(parsed.args))
+            self.console.print(result.message, markup=False)
+            self._record(parsed.name, f"Assistência {'concluída' if result.ok else 'falhou'} · {action_id}")
+        except (ContextError, AssistantError) as exc:
+            self.console.print(str(exc), markup=False)
+        except KeyboardInterrupt:
+            self.console.print("Ação cancelada.", markup=False)
+        return True
+
+    def _ensure_classic_loop(self) -> None:
+        if self._classic_loop is not None:
+            return
+        ready = threading.Event()
+        def run_loop() -> None:
+            loop = asyncio.new_event_loop()
+            asyncio.set_event_loop(loop)
+            self._classic_loop = loop
+            ready.set()
+            try:
+                loop.run_forever()
+                loop.run_until_complete(self.assistant_runtime.aclose())
+                loop.run_until_complete(loop.shutdown_asyncgens())
+                loop.run_until_complete(loop.shutdown_default_executor())
+            finally:
+                loop.close()
+                asyncio.set_event_loop(None)
+        self._classic_thread = threading.Thread(target=run_loop, name="lab-assistant-loop")
+        self._classic_thread.start()
+        ready.wait()
+
+    def start_classic_assistant(self, parsed) -> None:
+        if self._classic_action is not None:
+            self.console.print("Ação em curso; use /cancel.", markup=False)
+            return
+        self._ensure_classic_loop()
+        handlers = self.action_handlers(parsed.name)
+        action = handlers.actions()[parsed.name]
+        cancel = threading.Event()
+        done = threading.Event()
+        scheduled = threading.Event()
+        action_id = uuid4().hex
+        state = {"cancel": cancel, "done": done, "task": None}
+        self._classic_action = state
+
+        def schedule() -> None:
+            task = self._classic_loop.create_task(action(parsed.args, cancel=cancel))
+            state["task"] = task
+            def finished(completed) -> None:
+                try:
+                    result = completed.result()
+                except asyncio.CancelledError:
+                    self.console.print("Ação cancelada.", markup=False)
+                except Exception as exc:
+                    self.console.print(str(exc), markup=False)
+                else:
+                    self.console.print(result.message, markup=False)
+                    self._record(parsed.name, f"Assistência {'concluída' if result.ok else 'falhou'} · {action_id}")
+                finally:
+                    self._classic_action = None
+                    done.set()
+            task.add_done_callback(finished)
+            scheduled.set()
+        self._classic_loop.call_soon_threadsafe(schedule)
+        scheduled.wait()
+        self.console.print("Analisando projeto... Use /cancel para interromper.", markup=False)
+
+    def cancel_classic_action(self, *, silent: bool = False) -> None:
+        state = self._classic_action
+        if state is None:
+            if not silent:
+                self.console.print("Nenhuma ação em curso.", markup=False)
+            return
+        state["cancel"].set()
+        self._classic_loop.call_soon_threadsafe(state["task"].cancel)
+        self.console.print("Cancelando; aguardando limpeza...", markup=False)
+        state["done"].wait()
+
+    def close_assistant(self) -> None:
+        if self._classic_action is not None:
+            self.cancel_classic_action(silent=True)
+        if self._classic_loop is not None:
+            self._classic_loop.call_soon_threadsafe(self._classic_loop.stop)
+            self._classic_thread.join()
+            self._classic_loop = None
+            self._classic_thread = None
+        if self._runner is not None:
+            self._runner.run(self.assistant_runtime.aclose())
+            self._runner.close()
+            self._runner = None
 
     def _record(self, command: str, summary: str) -> None:
         if self.session_log is None:
             return
-        self.session_log.record(command, summary)
+        failure = self.session_log.try_record(command, summary)
+        if failure is not None:
+            self.console.print(failure, style="red", markup=False)
+
+    def _close_session(self, summary: str | None = None) -> None:
+        if self.session_log is None:
+            return
+        try:
+            self.session_log.close(summary)
+        except SessionError as exc:
+            self.console.print(str(exc), style="red", markup=False)
 
     def _print_next_step(self) -> None:
-        self.console.print(f"Próximo: {self.app.next_step()}", style="dim")
+        try:
+            step = self.app.next_step()
+        except ApplicationError as exc:
+            self.console.print(str(exc), style="red", markup=False)
+            return
+        self.console.print(f"Próximo: {step}", style="dim")
 
     def _printable(self, text: str) -> str:
         encoding = getattr(self.console.file, "encoding", None) or "utf-8"
@@ -345,8 +565,9 @@ class PythonLabCLI:
         return True
 
     def status(self, _argument: str = "") -> bool:
+        snapshot = self.app.status_snapshot()
         recommended = self.app.recommended()
-        current_id = self.app.progress.current_mission_id or "nenhuma"
+        current_id = snapshot.current_mission_id or "nenhuma"
         recommendation = f"{recommended.id} — {recommended.title}" if recommended else "Todas as missões concluídas"
         lines = [
             f"Missão atual: {current_id}",
@@ -355,7 +576,7 @@ class PythonLabCLI:
         try:
             progress = self.app.current_progress()
             if progress.tests_passed:
-                tests_status = "ok" if self.app.tests_are_current() else "desatualizados"
+                tests_status = "ok" if snapshot.tests_current else "desatualizados"
             else:
                 tests_status = "pendentes"
             lines.extend(
@@ -363,13 +584,14 @@ class PythonLabCLI:
                     f"Tentativas: {progress.attempts}",
                     f"Testes: {tests_status}",
                     f"Pistas: {progress.hints_revealed}",
-                    f"Plano: {'registrado' if progress.plan else 'pendente'}",
+                    f"Ajuda máxima: nível {progress.max_assistance_level}",
+                    f"Plano: {'registrado' if snapshot.plan_complete else 'pendente'}",
                     f"Explicação: {'registrada' if progress.explanation else 'pendente'}",
                 ]
             )
         except ApplicationError:
             pass
-        lines.append(f"Próximo: {self.app.next_step()}")
+        lines.append(f"Próximo: {snapshot.next_step}")
         self.console.print(Panel("\n".join(lines), title="Sessão"))
         return True
 
@@ -436,8 +658,15 @@ class PythonLabCLI:
         return True
 
     def exit(self, _argument: str = "") -> bool:
-        self.app.persist()
-        self.console.print("Progresso salvo. Até a próxima sessão.")
+        self.close_assistant()
+        try:
+            self.app.persist()
+        except ProgressError as exc:
+            self.console.print(str(exc), style="red", markup=False)
+            self.console.print("Sessão encerrada. O último estado confirmado foi preservado.")
+        else:
+            self.console.print("Progresso salvo. Até a próxima sessão.")
+        self._close_session("Sessão encerrada")
         return False
 
 
@@ -463,20 +692,61 @@ def _banner(app: PythonLabApp, console: Console) -> None:
     console.print(
         Panel(table, title=" Python Lab ", title_align="left", box=box.SQUARE, padding=(1, 1))
     )
-    console.print(f"Próximo: {app.next_step()}", style="green")
+    try:
+        step = app.next_step()
+    except ApplicationError as exc:
+        console.print(str(exc), style="red", markup=False)
+    else:
+        console.print(f"Próximo: {step}", style="green")
 
 
-def build_app(project_root: Path | None = None) -> PythonLabApp:
+def build_app(project_root: Path | None = None, *, data_dir: Path | None = None) -> PythonLabApp:
     root = project_root or Path(__file__).resolve().parent.parent
-    missions = load_missions(root / "missions")
-    return PythonLabApp(
-        goal=load_goal(root / "data" / "goal.json"),
-        skills=load_skills(root / "data" / "skills.json"),
-        missions=missions,
-        repository=ProgressRepository(root / "data" / "progress.json"),
-        project_root=root,
-        roadmap=load_roadmap(root / "data" / "roadmap.json", missions),
-    )
+    paths = resolve_paths(root, data_dir)
+    legacy = root / "data"
+    old_progress = legacy / "progress.json"
+    old_sessions = legacy / "sessions.json"
+    database_path = paths.data_dir / "lab.sqlite3"
+    needs_migration = not database_path.exists()
+    if not needs_migration:
+        try:
+            with connection(database_path) as db:
+                needs_migration = not has_user_state(db) and db.execute("SELECT 1 FROM migrations LIMIT 1").fetchone() is None
+        except (sqlite3.Error, OSError, ValueError) as exc:
+            raise ProgressError(f"Banco de progresso inválido: {exc}") from exc
+    if needs_migration:
+        real_progress = False
+        real_sessions = False
+        if old_progress.exists():
+            try:
+                raw_progress = old_progress.read_bytes()
+            except OSError as exc:
+                raise ProgressError(f"Não foi possível ler o progresso legado: {old_progress}: {exc}") from exc
+            state = decode_progress(raw_progress)
+            real_progress = bool(state.current_mission_id or state.missions or state.evidence)
+        if old_sessions.exists():
+            try:
+                raw_sessions = old_sessions.read_bytes()
+            except OSError as exc:
+                raise SessionError(f"Não foi possível ler o histórico legado: {old_sessions}: {exc}") from exc
+            real_sessions = bool(decode_sessions(raw_sessions))
+        if real_progress or real_sessions:
+            raise ProgressError(
+                f"Estado JSON legado encontrado. Execute lab migrate --from-dir {legacy} --data-dir {paths.data_dir}"
+            )
+    missions = load_catalog(root, paths.data_dir / "custom_catalog")
+    try:
+        app = PythonLabApp(
+            goal=load_goal(root / "data" / "goal.json"),
+            skills=load_skills(root / "data" / "skills.json"),
+            missions=missions,
+            repository=ProgressRepository(paths.data_dir / "lab.sqlite3"),
+            project_root=root,
+            roadmap=load_roadmap(root / "data" / "roadmap.json", missions),
+        )
+    except ActiveMissionError as exc:
+        raise ProgressError(str(exc)) from exc
+    return app
 
 
 class _ArgumentParser(argparse.ArgumentParser):
@@ -490,61 +760,260 @@ def _argument_parser() -> argparse.ArgumentParser:
         prog="python-lab",
         description="Ambiente de prática deliberada em Python.",
     )
-    parser.add_argument("--version", action="version", version="python-lab 0.3.0")
+    parser.add_argument("--version", action="version", version=f"python-lab {metadata.version('python-lab')}")
     parser.add_argument(
         "--classic",
         action="store_true",
         help="Usar o prompt lab> em vez da TUI em tela cheia.",
     )
+    parser.add_argument("--data-dir", type=Path, help="Diretório de dados do usuário")
+    parser.add_argument("--project", type=Path, help="Projeto do assistente; mantém o catálogo de missões separado")
+    parser.add_argument("--mode", choices=("assistant", "tutor"), default="assistant")
+    parser.add_argument("--level", type=int, choices=range(5), default=0)
+    parser.add_argument("--json", action="store_true", help="Resultado estruturado schema_version=1")
+    parser.add_argument("--traceback", type=Path)
+    parser.add_argument("--file", action="append", type=Path, default=[])
+    parser.add_argument("--yes", action="store_true", help="Confirmar aplicação, execução gerada ou publicação da ação selecionada")
+    parser.add_argument("--check", action="append", choices=("ast", "ruff", "pytest"), default=[])
+    parser.add_argument("--topic", help="Tema do draft de exercício")
+    parser.add_argument("--reference", action="store_true", help="Solicitar referência completa nível 4")
+    parser.add_argument("--review-completed", action="store_true", help="Incluir revisão opcional de concluídas")
+    parser.add_argument("--path", type=Path, help="Diretório pai para novo projeto")
+    parser.add_argument("command", nargs="?", choices=("migrate", *sorted(EXTERNAL_ACTIONS)))
+    parser.add_argument("files", nargs="*")
+    parser.add_argument("--from-dir", type=Path, help="Diretório com JSON legado")
     return parser
 
 
-def _run_classic(app: PythonLabApp, session_log: SessionLog | None, console: Console) -> int:
-    cli = PythonLabCLI(app=app, console=console, session_log=session_log)
-    _banner(app, console)
+def _run_classic(app: PythonLabApp, session_log: SessionLog | None, console: Console,
+                 assistant_project: Path | None = None, assistant_mode: str = "assistant",
+                 mode_explicit: bool = False) -> int:
+    cli = PythonLabCLI(app=app, console=console, session_log=session_log,
+                       assistant_project=assistant_project, assistant_mode=assistant_mode,
+                       mode_explicit=mode_explicit)
+    if assistant_project is None:
+        _banner(app, console)
+    else:
+        console.print(f"Projeto: {assistant_project.resolve()} · modo {assistant_mode}", markup=False)
+        console.print("Use /explain-code, /diagnose ou /check; /project off volta às missões.", markup=False)
     try:
         while True:
             line = console.input("[bold]lab>[/bold] ")
+            try:
+                parsed = parse_command(line)
+            except ValueError:
+                cli.execute(line)
+                continue
+            if cli._classic_action is not None:
+                if parsed.name == "/cancel":
+                    cli.cancel_classic_action()
+                elif parsed.name == "/exit":
+                    cli.cancel_classic_action()
+                    cli.execute(line)
+                    break
+                else:
+                    console.print("Ação em curso; use /cancel.", markup=False)
+                continue
+            if parsed.name in ASYNC_ACTIONS:
+                try:
+                    cli.start_classic_assistant(parsed)
+                except (ContextError, AssistantError) as exc:
+                    console.print(str(exc), markup=False)
+                continue
             if not cli.execute(line):
                 break
     except KeyboardInterrupt:
-        if session_log is not None:
-            session_log.close("Sessão interrompida")
+        cli.cancel_classic_action(silent=True)
+        cli._close_session("Sessão interrompida")
         console.print("\nSessão encerrada. O último estado confirmado foi preservado.")
     except EOFError:
-        app.persist()
-        if session_log is not None:
-            session_log.close("Sessão encerrada")
-        console.print("\nProgresso salvo. Até a próxima sessão.")
+        cli.cancel_classic_action(silent=True)
+        cli.exit()
+    finally:
+        cli.close_assistant()
     return 0
 
 
-def _run_tui(app: PythonLabApp, session_log: SessionLog | None) -> int:
+def _run_tui(app: PythonLabApp, session_log: SessionLog | None, assistant_project: Path | None = None, assistant_mode: str = "assistant", mode_explicit: bool = False) -> int:
     try:
-        PythonLabTUI(lab=app, session_log=session_log).run()
+        if assistant_project is None and assistant_mode == "assistant" and not mode_explicit:
+            PythonLabTUI(lab=app, session_log=session_log).run()
+        else:
+            PythonLabTUI(lab=app, session_log=session_log, assistant_project=assistant_project, assistant_mode=assistant_mode, mode_explicit=mode_explicit).run()
     finally:
-        if session_log is not None and session_log._current is not None:
-            if session_log._current.get("ended_at") is None:
+        if session_log is not None and session_log.is_open:
+            try:
                 session_log.close("Sessão encerrada")
+            except SessionError as exc:
+                encoding_safe_console(Console()).print(str(exc), style="red", markup=False)
     return 0
 
 
 def main(argv: Sequence[str] | None = None) -> int:
-    args = _argument_parser().parse_args(argv)
-    console = Console()
+    raw = list(sys.argv[1:] if argv is None else argv)
+    external = next((item for item in raw if item in EXTERNAL_ACTIONS), None)
+    if "--json" in raw and external is not None:
+        diagnostic = StringIO()
+        try:
+            with redirect_stderr(diagnostic):
+                args = _argument_parser().parse_intermixed_args(raw)
+        except SystemExit as exc:
+            if exc.code != 2:
+                raise
+            message = diagnostic.getvalue().strip().splitlines()[-1]
+            print(json.dumps({"schema_version": 1, "action": external, "ok": False,
+                              "message": message, "data": {"error_kind": "usage"}}, ensure_ascii=False))
+            return 2
+    else:
+        args = _argument_parser().parse_intermixed_args(raw)
+    if args.command in {"practice", "exercises"}:
+        return _run_external_learning(args)
+    if args.command in EXTERNAL_ACTIONS:
+        return _run_external_assistant(args)
+    console = encoding_safe_console(Console())
     if sys.version_info < (3, 11):
         console.print(
             "Python Lab requer Python 3.11 ou mais recente.", style="red", markup=False
         )
         return 2
+    if args.project is not None:
+        try:
+            Workspace(args.project)
+        except ContextError as exc:
+            console.print(str(exc), style="red", markup=False)
+            return 2
     session_log: SessionLog | None = None
     try:
-        app = build_app()
-        session_log = SessionLog(app.project_root / "data" / "sessions.json")
-        session_log.start()
+        if args.command == "migrate":
+            if args.from_dir is None:
+                console.print("Informe --from-dir para migrar.", style="red")
+                return 2
+            paths = resolve_paths(Path(__file__).resolve().parent.parent, args.data_dir)
+            report = migrate_json_state(args.from_dir, paths.data_dir / "lab.sqlite3")
+            console.print("Estado importado." if report.imported else "Estado já importado.")
+            return 0
+        app = build_app(data_dir=args.data_dir) if args.data_dir is not None else build_app()
+        session_log = SessionLog(app.repository.path)
+        try:
+            session_log.start()
+        except SessionError as exc:
+            console.print(str(exc), style="red", markup=False)
+    except ValueError as exc:
+        console.print(str(exc), style="red", markup=False)
+        return 2
     except (ProgressError, ApplicationError, CatalogError, SessionError) as exc:
         console.print(str(exc), style="red", markup=False)
         return 1
+    mode_explicit = any(value == "--mode" or value.startswith("--mode=") for value in raw)
     if args.classic:
-        return _run_classic(app, session_log, console)
-    return _run_tui(app, session_log)
+        return _run_classic(app, session_log, console, args.project, args.mode, mode_explicit)
+    return _run_tui(app, session_log, args.project, args.mode, mode_explicit)
+
+
+def _run_external_assistant(args) -> int:
+    """One-shot action; each invocation has a fresh in-memory token budget."""
+    action = args.command
+    runtime = None
+    try:
+        if args.topic or args.reference or args.review_completed:
+            raise ValueError("Opções de aprendizado requerem practice ou exercises.")
+        catalog = Path(__file__).resolve().parent.parent
+        data_dir = resolve_paths(catalog, args.data_dir).data_dir
+        workspace = Workspace(args.project or Path.cwd())
+        runtime = AssistantRuntime(data_dir)
+        handlers = runtime.commands(workspace, args.mode)
+        names = tuple(args.files) + tuple(str(path) for path in args.file)
+        if action in {"review", "apply", "verify", "new"}:
+            if args.traceback or args.level or args.file:
+                raise ValueError(f"{action} não aceita --traceback, --level ou --file.")
+            if args.yes and action != "apply" or args.check and action != "verify" or args.path and action != "new":
+                raise ValueError("Opção incompatível com a ação selecionada.")
+            arguments = names
+            if action == "apply" and args.yes:
+                arguments += ("--yes",)
+            elif action == "verify":
+                arguments += tuple(token for check in args.check for token in ("--check", check))
+            elif action == "new" and args.path is not None:
+                arguments += ("--path", str(args.path))
+            coro = handlers.actions()[f"/{action}"](arguments)
+        elif action == "check":
+            if args.traceback or args.level:
+                raise ValueError("check aceita apenas arquivos selecionados.")
+            coro = handlers.check(names)
+        else:
+            arguments = names + (('--level', str(args.level)) if args.level else ())
+            if args.traceback is not None:
+                arguments += ('--traceback', str(args.traceback))
+            coro = (handlers.explain if action == 'explain' else handlers.diagnose)(arguments)
+        async def run():
+            try:
+                return await coro
+            finally:
+                await runtime.aclose()
+        result = asyncio.run(run())
+    except (ValueError, ContextError, AssistantError) as exc:
+        result = CommandResult(False, str(exc), {"error_kind": "usage"})
+    code = 0 if result.ok else (2 if result.data.get("error_kind") == "usage" else 1)
+    if args.json:
+        print(json.dumps({"schema_version": 1, "action": action, "ok": result.ok,
+                          "message": result.message, "data": result.data}, ensure_ascii=False))
+    else:
+        encoding_safe_console(Console()).print(result.message, markup=False)
+    return code
+
+
+def _run_external_learning(args) -> int:
+    """Adapt argparse to the same learning dispatcher without selecting a model."""
+    action = args.command
+    runtime = None
+    try:
+        if args.file or args.traceback or args.level or args.check or args.path:
+            raise ValueError('Opção incompatível com prática/exercícios.')
+        app = build_app(data_dir=args.data_dir)
+        runtime = AssistantRuntime(app.repository.path.parent, app)
+        commands = LearningCommands(app, None, ExerciseService(
+            app.repository.path.parent, ProcessRunner(), catalog_dir=app.project_root),
+            provider_factory=lambda: runtime.get_service().provider,
+            workspace=args.project or app.project_root, mode=args.mode)
+        if action == 'practice':
+            if args.files or args.topic or args.reference or args.yes:
+                raise ValueError('Uso: lab practice [--review-completed].')
+            command = parse_command('/practice')
+            if args.review_completed:
+                from python_lab.commands import Command
+                command = Command('/practice', ('--review-completed',))
+        else:
+            from python_lab.commands import Command
+            if args.review_completed or not args.files:
+                raise ValueError('Uso: lab exercises draft --topic TEXT | validate ID --yes | publish ID --yes | show ID [--reference --yes].')
+            operation, *identities = args.files
+            if operation == 'draft':
+                if identities or not args.topic or args.yes or args.reference:
+                    raise ValueError('Uso: lab exercises draft --topic TEXT.')
+                command = Command('/exercise', (args.topic,))
+            elif operation in {'validate', 'publish', 'show'}:
+                if len(identities) != 1 or args.topic or (args.reference and operation != 'show'):
+                    raise ValueError(f'Uso: lab exercises {operation} ID [--yes].')
+                flags = (('--reference',) if args.reference else ()) + (('--yes',) if args.yes else ())
+                command = Command('/exercise-' + operation, (*identities, *flags))
+            else:
+                raise ValueError('Operação de exercício desconhecida; use draft, validate, publish ou show.')
+        dispatcher = CommandDispatcher()
+        commands.register(dispatcher)
+        async def run():
+            try:
+                return await dispatcher.dispatch_async(command)
+            finally:
+                await runtime.aclose()
+        result = asyncio.run(run())
+    except (ValueError, AssistantError, CatalogError, ApplicationError) as exc:
+        result = CommandResult(False, str(exc), {'error_kind': 'usage'})
+    except (OSError, ProgressError, SessionError) as exc:
+        result = CommandResult(False, str(exc), {'error_kind': 'execution'})
+    code = 0 if result.ok else (2 if result.data.get('error_kind') == 'usage' else 1)
+    if args.json:
+        print(json.dumps({'schema_version': 1, 'action': action, 'ok': result.ok,
+                          'message': result.message, 'data': result.data}, ensure_ascii=False))
+    else:
+        encoding_safe_console(Console()).print(result.message, markup=False)
+    return code

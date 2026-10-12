@@ -67,11 +67,16 @@ def load_skills(path: Path) -> dict[str, Skill]:
         if not isinstance(item, dict):
             raise CatalogError(f"Cada skill deve ser um objeto JSON em {path}")
         skill_id = _text(_require(item, "id", path), "id", path)
+        if skill_id in skills:
+            raise CatalogError(f"ID de skill duplicado em {path}: {skill_id}")
+        future = item.get("future", False)
+        if not isinstance(future, bool):
+            raise CatalogError(f"Campo future deve ser booleano em {path}: {skill_id}")
         skills[skill_id] = Skill(
             id=skill_id,
             name=_text(_require(item, "name", path), "name", path),
             category=_text(_require(item, "category", path), "category", path),
-            future=bool(item.get("future", False)),
+            future=future,
         )
     return skills
 
@@ -206,3 +211,75 @@ def load_roadmap(path: Path, missions: list[Mission] | None = None) -> tuple[Roa
                     f"Missão {mission.id} referencia ciclo inexistente: {mission.cycle}"
                 )
     return ordered
+
+
+def compose_missions(
+    catalog_dir: Path,
+    custom_catalog: Path,
+    *,
+    additional: tuple[Mission, ...] = (),
+) -> list[Mission]:
+    """Validate the complete installed/custom graph without changing either.
+
+    Shared composition boundary for publication and application bootstrap.
+    catalog_dir is the installed project root containing missions/ and data/.
+    Custom prerequisite edges may point to installed or other custom missions.
+    """
+    catalog_dir, custom_catalog = Path(catalog_dir), Path(custom_catalog)
+    missions = load_missions(catalog_dir / 'missions')
+    if custom_catalog.is_symlink():
+        raise CatalogError('Catálogo personalizado não pode ser symlink')
+    if custom_catalog.exists():
+        if not custom_catalog.is_dir():
+            raise CatalogError('Catálogo personalizado deve ser diretório')
+        for directory in sorted(custom_catalog.iterdir()):
+            if directory.is_symlink() or not directory.is_dir():
+                raise CatalogError('Entrada inválida no catálogo personalizado')
+            mission_path = directory / 'mission.json'
+            if not mission_path.is_file() or mission_path.is_symlink():
+                raise CatalogError('Metadados de missão personalizada ausentes ou inválidos')
+            # Custom content uses D3's strict single-file schema; validate all
+            # existing custom missions too, not only the proposed addition.
+            from python_lab.assistant.errors import AssistantError
+            from python_lab.exercises.models import mission_payload
+            try:
+                mission_payload(_read_json(mission_path), directory.name)
+            except AssistantError as exc:
+                raise CatalogError(f'Missão personalizada inválida: {exc}') from exc
+            missions.append(_load_mission(mission_path))
+    missions.extend(additional)
+    ids = [mission.id for mission in missions]
+    slugs = [mission.slug for mission in missions]
+    if len(ids) != len(set(ids)) or len(slugs) != len(set(slugs)):
+        raise CatalogError('ID ou slug de missão duplicado no catálogo composto')
+    skills = load_skills(catalog_dir / 'data' / 'skills.json')
+    roadmap = {item.cycle: item.lesson_id for item in load_roadmap(catalog_dir / 'data' / 'roadmap.json')}
+    graph = {mission.id: mission.prerequisites for mission in missions}
+    for mission in missions:
+        if any(skill not in skills for skill in mission.skills):
+            raise CatalogError(f'Skill inexistente na missão {mission.id}')
+        if any(item not in graph for item in mission.prerequisites):
+            raise CatalogError(f'Pré-requisito inexistente na missão {mission.id}')
+        if roadmap.get(mission.cycle) != mission.lesson_id:
+            raise CatalogError(f'lesson_id incompatível com ciclo da missão {mission.id}')
+    visiting, visited = set(), set()
+
+    def visit(mission_id: str) -> None:
+        if mission_id in visiting:
+            raise CatalogError(f'Ciclo de pré-requisitos na missão {mission_id}')
+        if mission_id in visited:
+            return
+        visiting.add(mission_id)
+        for prerequisite in graph[mission_id]:
+            visit(prerequisite)
+        visiting.remove(mission_id)
+        visited.add(mission_id)
+
+    for mission_id in graph:
+        visit(mission_id)
+    return sorted(missions, key=lambda mission: (mission.cycle, mission.id))
+
+
+def load_catalog(installed_dir: Path, custom_dir: Path) -> list[Mission]:
+    """Load and validate installed plus user missions without writing either."""
+    return compose_missions(installed_dir, custom_dir)

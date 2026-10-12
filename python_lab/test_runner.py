@@ -1,12 +1,13 @@
 import hashlib
 import os
-import subprocess
+import threading
 import sys
 import tempfile
 import xml.etree.ElementTree as ET
 from pathlib import Path
 
 from python_lab.models import TestResult
+from python_lab.runtime.processes import ProcessCleanupError, ProcessRunner
 
 
 def solution_fingerprint(solution_path: Path) -> str | None:
@@ -83,46 +84,66 @@ def run_tests(
     project_root: Path,
     solution_path: Path | None = None,
     timeout: float = 30.0,
+    *,
+    cancel: threading.Event | None = None,
 ) -> TestResult:
     env = os.environ.copy()
+    # The caller selects one suite. Ambient pytest options/configuration must
+    # not add collection paths or change the meaning of its result.
+    env.pop("PYTEST_ADDOPTS", None)
     if solution_path is not None:
         env["PYTHON_LAB_SOLUTION"] = str(solution_path)
+    try:
+        selected = (project_root / test_path).resolve()
+        suite_root = selected if selected.is_dir() else selected.parent
+    except (OSError, RuntimeError) as exc:
+        return TestResult(
+            passed=False,
+            return_code=-1,
+            output=f"Não foi possível acessar os testes: {exc}",
+            summary="Falha ao executar pytest",
+        )
     with tempfile.TemporaryDirectory(prefix="python-lab-pytest-") as report_dir:
         report_path = Path(report_dir) / "results.xml"
+        config_path = Path(report_dir) / "pytest.ini"
         try:
-            completed = subprocess.run(
+            config_path.write_text("[pytest]\n", encoding="utf-8")
+        except OSError as exc:
+            return TestResult(
+                passed=False,
+                return_code=-1,
+                output=f"Não foi possível executar os testes: {exc}",
+                summary="Falha ao executar pytest",
+            )
+        try:
+            completed = ProcessRunner(env=env).run(
                 [
                     sys.executable,
                     "-m",
                     "pytest",
-                    str(test_path),
+                    str(selected),
+                    "-c",
+                    str(config_path),
+                    # Bound parent traversal too: Windows junction aliases at
+                    # an ambient ancestor can otherwise collect this suite twice.
+                    "--rootdir",
+                    str(suite_root),
+                    "--confcutdir",
+                    str(suite_root),
                     "-q",
                     "-rA",
                     "--junitxml",
                     str(report_path),
                 ],
                 cwd=project_root,
-                text=True,
-                encoding="utf-8",
-                errors="replace",
-                stdout=subprocess.PIPE,
-                stderr=subprocess.STDOUT,
-                check=False,
-                env=env,
                 timeout=timeout,
+                cancel=cancel,
             )
-        except subprocess.TimeoutExpired as exc:
-            partial = exc.output or exc.stdout or ""
-            if isinstance(partial, bytes):
-                partial = partial.decode("utf-8", errors="replace")
-            detail = f"\n{partial}" if partial else ""
-            return TestResult(
-                passed=False,
-                return_code=-1,
-                output=f"Tempo limite excedido após {timeout:g} segundos.{detail}",
-                summary="Execução interrompida por tempo limite",
-            )
-        except FileNotFoundError as exc:
+        except ProcessCleanupError:
+            # Cleanup failure remains an error even if cancellation caused the
+            # interruption. Do not let it become an ordinary cancelled result.
+            raise
+        except FileNotFoundError:
             return TestResult(
                 passed=False,
                 return_code=-1,
@@ -136,14 +157,27 @@ def run_tests(
             return TestResult(
                 passed=False,
                 return_code=-1,
-                output=f"Não foi possível iniciar os testes: {exc}",
-                summary="Falha ao iniciar pytest",
+                output=f"Não foi possível executar os testes: {exc}",
+                summary="Falha ao executar pytest",
+            )
+        if completed.timed_out or completed.cancelled:
+            message = (
+                "Execução cancelada."
+                if completed.cancelled
+                else f"Tempo limite excedido após {timeout:g} segundos."
+            )
+            output = f"{message}\n{completed.output}".encode("utf-8")[:1048576]
+            return TestResult(
+                passed=False, return_code=-1,
+                output=output.decode("utf-8", errors="ignore"),
+                summary="Execução cancelada" if completed.cancelled else "Execução interrompida por tempo limite",
+                cancelled=completed.cancelled,
             )
         report_complete, summary, diagnostics = _pytest_report_details(report_path)
     return TestResult(
-        passed=completed.returncode == 0 and report_complete,
-        return_code=completed.returncode,
-        output=completed.stdout or "",
+        passed=completed.return_code == 0 and report_complete,
+        return_code=completed.return_code,
+        output=completed.output or "",
         summary=summary,
         diagnostics=diagnostics,
     )

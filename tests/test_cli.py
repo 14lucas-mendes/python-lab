@@ -1,3 +1,5 @@
+import pytest
+
 from pathlib import Path
 
 from rich.console import Console
@@ -140,7 +142,7 @@ def test_test_output_survives_unencodable_characters(app, monkeypatch):
     app.save_plan({"input": "x", "output": "y", "steps": "z", "risks": "w"})
     monkeypatch.setattr(
         "python_lab.app.run_tests",
-        lambda *args: RunnerResult(False, 1, "erro \ufffd utf-8", summary="1 falho"),
+        lambda *args, **kwargs: RunnerResult(False, 1, "erro \ufffd utf-8", summary="1 falho"),
     )
 
     assert cli.execute("/test") is True
@@ -155,7 +157,7 @@ def test_test_output_treats_student_text_as_literal(app, monkeypatch):
     app.save_plan({"input": "x", "output": "y", "steps": "z", "risks": "w"})
     monkeypatch.setattr(
         "python_lab.app.run_tests",
-        lambda *args: RunnerResult(False, 1, "ValueError: [/audit]"),
+        lambda *args, **kwargs: RunnerResult(False, 1, "ValueError: [/audit]"),
     )
 
     assert cli.execute("/test") is True
@@ -163,21 +165,24 @@ def test_test_output_treats_student_text_as_literal(app, monkeypatch):
     assert "ValueError: [/audit]" in console.export_text()
 
 
-def test_persistence_error_is_reported_without_traceback(app, monkeypatch):
+def test_persistence_error_is_reported_without_traceback(app):
     console = Console(record=True, width=100)
     cli = PythonLabCLI(app=app, console=console)
     cli.execute("/start 001")
     app.current_progress().attempts = 1
-    monkeypatch.setattr(
-        app.repository,
-        "save",
-        lambda progress: (_ for _ in ()).throw(ProgressError("falha de disco")),
-    )
+    app.persist()
+    from python_lab.storage.database import connection
+    with connection(app.repository.path) as db:
+        db.execute("CREATE TRIGGER reject_help BEFORE UPDATE ON progress BEGIN SELECT RAISE(ABORT, 'falha de disco'); END")
+        db.commit()
 
     assert cli.execute("/hint") is True
     output = console.export_text()
     assert "falha de disco" in output
     assert "Traceback" not in output
+    assert app.current_progress().hints_revealed == 0
+    with connection(app.repository.path) as db:
+        assert db.execute('SELECT COUNT(*) FROM assistance_events').fetchone()[0] == 0
 
 
 def test_explain_rejects_solution_changed_after_passing_tests(app):
@@ -252,7 +257,7 @@ def test_passing_tests_hide_raw_pytest_output(app, monkeypatch):
     app.save_plan({"input": "x", "output": "y", "steps": "z", "risks": "w"})
     monkeypatch.setattr(
         "python_lab.app.run_tests",
-        lambda *args: RunnerResult(True, 0, "===== 2 passed =====", summary="2 teste(s): 2 aprovado(s)"),
+        lambda *args, **kwargs: RunnerResult(True, 0, "===== 2 passed =====", summary="2 teste(s): 2 aprovado(s)"),
     )
     assert cli.execute("/test") is True
     output = console.export_text()
@@ -261,12 +266,12 @@ def test_passing_tests_hide_raw_pytest_output(app, monkeypatch):
 
 
 def test_session_records_commands_and_lists_previous(app):
-    log = SessionLog(app.project_root / "data" / "sessions.json")
+    log = SessionLog(app.repository.path)
     log.start()
     log.record("/help", "Ajuda exibida")
     log.close("Sessão encerrada")
 
-    current = SessionLog(app.project_root / "data" / "sessions.json")
+    current = SessionLog(app.repository.path)
     current.start()
     console = Console(record=True, width=120)
     cli = PythonLabCLI(app=app, console=console, session_log=current)
@@ -279,3 +284,117 @@ def test_session_records_commands_and_lists_previous(app):
     cli = PythonLabCLI(app=app, console=console, session_log=current)
     cli.execute("/session all")
     assert "Sessões anteriores" in console.export_text()
+
+
+def test_log_failure_keeps_cli_alive(app, monkeypatch):
+    from python_lab.session import SessionError
+
+    log = SessionLog(app.repository.path)
+    log.start()
+    def fail(*args):
+        raise SessionError("histórico indisponível")
+    monkeypatch.setattr(log, "record", fail)
+    console = Console(record=True, width=120)
+    cli = PythonLabCLI(app, console, log)
+    assert cli.execute("/status") is True
+    assert cli.execute("/unknown") is True
+    output = console.export_text()
+    assert "histórico indisponível" in output
+    assert "Traceback" not in output
+
+
+def test_try_record_returns_failure_without_recursion(app, monkeypatch):
+    from python_lab.session import SessionError
+
+    log = SessionLog(app.repository.path)
+    calls = []
+    def fail(command, summary):
+        calls.append(command)
+        raise SessionError("falha de histórico")
+    monkeypatch.setattr(log, "record", fail)
+    assert log.try_record("/status", "Status") == "falha de histórico"
+    assert calls == ["/status"]
+
+
+def test_history_and_close_failures_allow_exit(app, monkeypatch):
+    from python_lab.session import SessionError
+
+    log = SessionLog(app.repository.path)
+    log.start()
+    def fail(*args):
+        raise SessionError("histórico indisponível")
+    monkeypatch.setattr(log, "load", fail)
+    monkeypatch.setattr(log, "close", fail)
+    console = Console(record=True, width=120)
+    cli = PythonLabCLI(app, console, log)
+    assert cli.execute("/session all") is True
+    assert cli.execute("/exit") is False
+    assert "histórico indisponível" in console.export_text()
+
+
+def test_progress_conflict_blocks_mutation_but_allows_exit(app):
+    from python_lab.progress import ProgressRepository
+
+    app.start("001")
+    other = ProgressRepository(app.repository.path)
+    newer = other.load()
+    newer.missions["001"].explanation = "Outra sessão"
+    other.save(newer)
+    console = Console(record=True, width=120)
+    cli = PythonLabCLI(app, console)
+    assert cli.execute("/explain Estado antigo") is True
+    assert app.current_progress().explanation is None
+    assert cli.execute("/exit") is False
+    assert "Conflito de progresso" in console.export_text()
+    assert other.load().missions["001"].explanation == "Outra sessão"
+
+
+def test_unreadable_fingerprint_is_actionable_without_incrementing_attempt(app, monkeypatch):
+    from python_lab.app import ApplicationError
+    import pytest
+
+    app.start("001")
+    app.save_plan({"input": "x", "output": "y", "steps": "z", "risks": "w"})
+    def fail(path):
+        raise PermissionError("sem permissão")
+    monkeypatch.setattr("python_lab.app.solution_fingerprint", fail)
+    with pytest.raises(ApplicationError, match="solução"):
+        app.run_current_tests()
+    assert app.current_progress().attempts == 0
+    progress = app.current_progress()
+    progress.tests_passed = True
+    progress.tested_solution_path = str(app.current_mission().solution_path)
+    console = Console(record=True)
+    cli = PythonLabCLI(app, console)
+    assert cli.execute("/status") is True
+    assert cli.execute("/help") is True
+    assert app.tests_are_current() is False
+    assert app.current_progress().attempts == 0
+    assert "Execute /test novamente para a solução atual" in console.export_text()
+
+
+def test_removed_active_mission_is_actionable(app):
+    from python_lab.app import ApplicationError, PythonLabApp
+    import pytest
+
+    app.start("001")
+    with pytest.raises(ApplicationError, match="ativa.*001.*catálogo"):
+        PythonLabApp(app.goal, app.skills, [], app.repository, app.project_root)
+
+
+@pytest.mark.parametrize("encoding", ["cp1252", "utf-8"])
+def test_supplied_console_preserves_its_encoding_and_supported_text(app, encoding):
+    from io import BytesIO, TextIOWrapper
+    from rich.panel import Panel
+
+    sink = BytesIO()
+    stream = TextIOWrapper(sink, encoding=encoding, errors="strict")
+    console = Console(file=stream, width=100)
+    cli = PythonLabCLI(app, console)
+    cli.console.print(Panel("ação: ✓ → 中文 😀"))
+    cli.console.file.flush()
+    output = sink.getvalue().decode(encoding)
+    expected = "ação: ✓ → 中文 😀" if encoding == "utf-8" else "ação: ? ? ?? ?"
+    assert expected in output
+    assert cli.console.file.encoding == encoding
+    assert stream.encoding == encoding and stream.errors == "strict"

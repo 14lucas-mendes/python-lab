@@ -2,7 +2,7 @@ from python_lab.session import MAX_EVENTS, MAX_SESSIONS, SessionError, SessionLo
 
 
 def test_session_round_trip(tmp_path):
-    path = tmp_path / "sessions.json"
+    path = tmp_path / "lab.sqlite3"
     log = SessionLog(path)
     log.start()
     log.record("/start 001", "Missão 001 iniciada")
@@ -19,7 +19,7 @@ def test_session_round_trip(tmp_path):
 
 
 def test_invalid_session_file_is_not_overwritten(tmp_path):
-    path = tmp_path / "sessions.json"
+    path = tmp_path / "lab.sqlite3"
     path.write_text("{invalid", encoding="utf-8")
     log = SessionLog(path)
     try:
@@ -32,7 +32,7 @@ def test_invalid_session_file_is_not_overwritten(tmp_path):
 
 
 def test_session_caps_events_and_history(tmp_path):
-    path = tmp_path / "sessions.json"
+    path = tmp_path / "lab.sqlite3"
     log = SessionLog(path)
     log.start()
     for index in range(MAX_EVENTS + 5):

@@ -26,8 +26,9 @@ def _approved_solution(app, tmp_path):
     progress.tested_solution_fingerprint = solution_fingerprint(solution)
 
 
+@pytest.mark.parametrize("failure_operation", ["fingerprint", "resolve"])
 @pytest.mark.parametrize("error_type", [PermissionError, FileNotFoundError, OSError])
-def test_test_read_error_does_not_count_attempt_and_can_retry(app, monkeypatch, error_type):
+def test_test_read_error_does_not_count_attempt_and_can_retry(app, monkeypatch, error_type, failure_operation):
     app.start("001")
     plan = {"input": "x", "output": "y", "steps": "z", "risks": "w"}
     app.save_plan(plan)
@@ -37,11 +38,21 @@ def test_test_read_error_does_not_count_attempt_and_can_retry(app, monkeypatch, 
     def unreadable(_path):
         raise error_type("Arquivo em uso pelo editor")
 
-    def unexpected_run(*args):
+    def unexpected_run(*args, **kwargs):
         pytest.fail("Os testes não devem executar se a solução não pôde ser lida")
 
     with monkeypatch.context() as patch:
-        patch.setattr("python_lab.app.solution_fingerprint", unreadable)
+        if failure_operation == "fingerprint":
+            patch.setattr("python_lab.app.solution_fingerprint", unreadable)
+        else:
+            original_resolve = Path.resolve
+
+            def resolve(path, *args, **kwargs):
+                if path == app.current_mission().solution_path:
+                    return unreadable(path)
+                return original_resolve(path, *args, **kwargs)
+
+            patch.setattr(Path, "resolve", resolve)
         patch.setattr("python_lab.app.run_tests", unexpected_run)
         assert cli.execute("/test") is True
     output = console.export_text()
@@ -56,7 +67,7 @@ def test_test_read_error_does_not_count_attempt_and_can_retry(app, monkeypatch, 
     assert stored.attempts == 0
     assert stored.attempt_history == []
 
-    monkeypatch.setattr("python_lab.app.run_tests", lambda *args: RunnerResult(True, 0, "Teste aprovado"))
+    monkeypatch.setattr("python_lab.app.run_tests", lambda *args, **kwargs: RunnerResult(True, 0, "Teste aprovado"))
     assert cli.execute("/test") is True
     assert app.current_progress().attempts == 1
     assert len(app.current_progress().attempt_history) == 1
@@ -126,7 +137,7 @@ def test_start_with_unreadable_briefing_records_success_and_warning(app, unreada
         briefing.write_bytes(b"\xff")
     else:
         briefing.unlink()
-    session = SessionLog(app.project_root / "data" / "sessions.json")
+    session = SessionLog(app.repository.path)
     console = Console(record=True, width=120)
     cli = PythonLabCLI(app, console, session)
     assert cli.execute("/start 001") is True
@@ -148,3 +159,37 @@ def test_pilot_reflection_questions_match_briefing(mission_id):
     questions = tuple(line[2:] for line in reflection.splitlines() if line.startswith("- "))
     assert questions
     assert mission.reflection_questions == questions
+
+
+@pytest.mark.parametrize("adapter", ["cli", "tui"])
+def test_adapters_record_each_test_result_once(app, monkeypatch, adapter):
+    app.start("001")
+    app.save_plan({"input": "x", "output": "y", "steps": "z", "risks": "w"})
+    result = RunnerResult(True, 0, "Teste aprovado")
+    monkeypatch.setattr("python_lab.app.run_tests", lambda *args, **kwargs: result)
+    recorded = []
+    remember = app.remember_test_result
+
+    def record(current):
+        recorded.append(current)
+        remember(current)
+
+    monkeypatch.setattr(app, "remember_test_result", record)
+    if adapter == "cli":
+        cli = PythonLabCLI(app, Console(record=True))
+        assert cli.execute("/test") is True
+    else:
+        tui = PythonLabTUI(app)
+
+        async def scenario():
+            async with tui.run_test() as pilot:
+                tui._submit("/test")
+                await tui.workers.wait_for_complete()
+                await pilot.pause()
+                assert not tui._testing
+
+        asyncio.run(scenario())
+    assert recorded == [result]
+    assert app.last_test_result() is result
+    assert app.current_progress().attempts == 1
+    assert len(app.current_progress().attempt_history) == 1

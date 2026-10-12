@@ -20,7 +20,7 @@ def test_app(tmp_path):
     copyfile(ROOT / "data" / "goal.json", data_dir / "goal.json")
     copyfile(ROOT / "data" / "skills.json", data_dir / "skills.json")
     copytree(ROOT / "missions" / "001-consolidar-falhas", tmp_path / "missions" / "001-consolidar-falhas")
-    repository = ProgressRepository(data_dir / "progress.json")
+    repository = ProgressRepository(tmp_path / "lab.sqlite3")
     return PythonLabApp(
         goal=load_goal(data_dir / "goal.json"),
         skills=load_skills(data_dir / "skills.json"),

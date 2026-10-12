@@ -4,24 +4,25 @@ from textual import events
 from textual.widgets import Input, OptionList, Static
 from textual.widgets.option_list import Option
 
-from python_lab.app import PythonLabApp
-from python_lab.learning import PLAN_KEYS
+from python_lab.app import PythonLabApp, StatusSnapshot
 
 
 class NextStepBar(Static):
-    def update_from(self, lab: PythonLabApp) -> None:
-        done, total = cycle_progress(lab)
+    def update_from(self, lab: PythonLabApp, snapshot: StatusSnapshot | None = None) -> None:
+        snapshot = snapshot or lab.status_snapshot()
+        done, total = cycle_progress(lab, snapshot)
         bar = Text()
         bar.append("█" * done, style="#22c55e")
         bar.append("░" * (total - done), style="#3f3f3f")
         bar.append(f"  {done}/{total}  ", style="#8a8a8a")
-        bar.append(lab.next_step(), style="#22c55e")
+        bar.append(snapshot.next_step, style="#22c55e")
         self.update(bar)
 
 
-def cycle_progress(lab: PythonLabApp) -> tuple[int, int]:
+def cycle_progress(lab: PythonLabApp, snapshot: StatusSnapshot | None = None) -> tuple[int, int]:
+    snapshot = snapshot or lab.status_snapshot()
     total = 4
-    current_id = lab.progress.current_mission_id
+    current_id = snapshot.current_mission_id
     if current_id is None:
         if any(
             item.status == "completed" for item in lab.progress.missions.values()
@@ -32,10 +33,9 @@ def cycle_progress(lab: PythonLabApp) -> tuple[int, int]:
     if progress is None:
         return 0, total
     done = 1
-    plan = progress.plan or {}
-    if all(str(plan.get(key, "")).strip() for key in PLAN_KEYS):
+    if snapshot.plan_complete:
         done += 1
-    if lab.tests_are_current():
+    if snapshot.tests_current:
         done += 1
     if progress.explanation:
         done += 1

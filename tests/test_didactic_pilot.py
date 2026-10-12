@@ -114,7 +114,7 @@ def test_start_presents_briefing_and_explain_presents_reflection(app, add_teachi
 def test_test_details_reuses_last_output_without_new_attempt(app, monkeypatch):
     app.start("001")
     app.save_plan({"input": "x", "output": "y", "steps": "z", "risks": "w"})
-    monkeypatch.setattr("python_lab.app.run_tests", lambda *args: RunnerResult(False, 1, "SAÍDA COMPLETA [literal]", "Um teste falhou", ("caso vazio: incorreto",)))
+    monkeypatch.setattr("python_lab.app.run_tests", lambda *args, **kwargs: RunnerResult(False, 1, "SAÍDA COMPLETA [literal]", "Um teste falhou", ("caso vazio: incorreto",)))
     cli, buffer = _cli(app)
     cli.execute("/test")
     assert "caso vazio: incorreto" in buffer.getvalue()
@@ -217,7 +217,7 @@ def test_tui_refreshes_stale_tests_without_a_command(app, tmp_path):
 def test_tui_test_details_does_not_launch_a_second_worker(app, monkeypatch):
     app.start("001")
     app.save_plan({"input": "x", "output": "y", "steps": "z", "risks": "w"})
-    monkeypatch.setattr("python_lab.app.run_tests", lambda *args: RunnerResult(False, 1, "DETALHE COMPLETO", "Teste falhou", ("Lista vazia",)))
+    monkeypatch.setattr("python_lab.app.run_tests", lambda *args, **kwargs: RunnerResult(False, 1, "DETALHE COMPLETO", "Teste falhou", ("Lista vazia",)))
 
     async def scenario(tui, pilot):
         await _submit(tui, pilot, "/test")

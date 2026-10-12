@@ -1,3 +1,4 @@
+from rich.text import Text
 from textual.app import ComposeResult
 from textual.binding import Binding
 from textual.containers import Horizontal, Vertical, VerticalScroll
@@ -25,6 +26,21 @@ Digite / para abrir a lista de comandos.
 /test details Saída completa sem nova tentativa
 /hint        Liberar a próxima pista
 /explain     Registrar a explicação e concluir
+/project <dir>  Abrir projeto do assistente; off retorna às missões
+/mode <assistant|tutor> Alternar modo
+/explain-code <arquivo> Explicar código
+/diagnose --traceback <arquivo> --file <fonte> Diagnosticar erro
+/check <arquivo> Verificação local
+/review <arquivo> Revisão local e propostas opcionais
+/apply <id>  Confirmar diff e aplicar
+/verify <id> --check ast|ruff|pytest Verificação explícita
+/new <template> <nome> --path <pai> Criar projeto
+/practice    Sugestões por observações; somente leitura
+/exercise <tema> Gerar draft privado para revisão
+/exercise-show <id> Consultar draft, referência oculta
+/exercise-validate <id> Confirmar execução com seus privilégios
+/exercise-publish <id> Aprovar revisão e publicação local
+/cancel      Cancelar ação em curso
 /help        Mostrar esta ajuda
 /exit        Salvar e encerrar
 
@@ -100,6 +116,7 @@ class ExplainScreen(ModalScreen[str | None]):
                     id="reflection", markup=False,
                 )
                 yield TextArea(self._explanation, id="explain-text")
+                yield Static("", id="explain-error", markup=False)
             with Horizontal(id="dialog-buttons"):
                 yield Button("Concluir", variant="primary", id="explain-save")
                 yield Button("Cancelar", id="explain-cancel")
@@ -109,7 +126,12 @@ class ExplainScreen(ModalScreen[str | None]):
 
     def on_button_pressed(self, event: Button.Pressed) -> None:
         if event.button.id == "explain-save":
-            self.dismiss(self.query_one("#explain-text", TextArea).text)
+            text = self.query_one("#explain-text", TextArea).text
+            if not text.strip():
+                self.query_one("#explain-error", Static).update("A explicação não pode ser vazia")
+                self.query_one("#explain-text", TextArea).focus()
+                return
+            self.dismiss(text)
             return
         self.dismiss(None)
 
@@ -124,13 +146,17 @@ class ConfirmScreen(ModalScreen[bool]):
         Binding("escape", "cancel", "Cancelar", show=False),
     ]
 
-    def __init__(self, message: str) -> None:
+    def __init__(self, message: str, *, diff: str | None = None) -> None:
         super().__init__()
         self._message = message
+        self._diff = diff
 
     def compose(self) -> ComposeResult:
         with Vertical(id="confirm-dialog"):
-            yield Label(self._message, id="confirm-message")
+            yield Label(self._message, id="confirm-message", markup=False)
+            if self._diff is not None:
+                with VerticalScroll(id="patch-scroll"):
+                    yield Static(Text(self._diff), id="patch-diff", markup=False)
             with Horizontal(id="dialog-buttons"):
                 yield Button("Confirmar", variant="error", id="confirm-yes")
                 yield Button("Cancelar", id="confirm-no")

@@ -2,10 +2,11 @@ import pytest
 
 from python_lab.models import AppProgress, MissionProgress
 from python_lab.progress import ProgressError, ProgressRepository
+from python_lab.storage.database import connection
 
 
 def test_progress_round_trip(tmp_path):
-    path = tmp_path / "progress.json"
+    path = tmp_path / "lab.sqlite3"
     repository = ProgressRepository(path)
     expected = AppProgress(
         current_mission_id="001",
@@ -29,7 +30,7 @@ def test_progress_round_trip(tmp_path):
 
 
 def test_invalid_progress_is_not_overwritten(tmp_path):
-    path = tmp_path / "progress.json"
+    path = tmp_path / "lab.sqlite3"
     path.write_text("{invalid", encoding="utf-8")
     repository = ProgressRepository(path)
     with pytest.raises(ProgressError, match="Progresso inválido"):
@@ -48,15 +49,17 @@ def test_invalid_progress_is_not_overwritten(tmp_path):
     ],
 )
 def test_invalid_progress_schema_is_rejected(tmp_path, payload):
-    path = tmp_path / "progress.json"
-    path.write_text(payload, encoding="utf-8")
+    path = tmp_path / "lab.sqlite3"
+    with connection(path) as db:
+        db.execute("INSERT INTO progress(id,payload,revision) VALUES (1,?,1)", (payload,))
+        db.commit()
 
     with pytest.raises(ProgressError, match="Progresso inválido"):
         ProgressRepository(path).load()
 
 
 def test_concurrent_repository_save_is_rejected_without_overwriting(tmp_path):
-    path = tmp_path / "progress.json"
+    path = tmp_path / "lab.sqlite3"
     first = ProgressRepository(path)
     second = ProgressRepository(path)
     first_progress = first.load()
@@ -72,3 +75,14 @@ def test_concurrent_repository_save_is_rejected_without_overwriting(tmp_path):
         second.save(second_progress)
 
     assert ProgressRepository(path).load().current_mission_id == "001"
+
+
+def test_unserializable_progress_does_not_replace_saved_state(tmp_path):
+    path = tmp_path / "lab.sqlite3"
+    repo = ProgressRepository(path)
+    repo.save(AppProgress())
+    invalid = repo.load()
+    invalid.missions["001"] = MissionProgress(status="started", explanation=object())
+    with pytest.raises(ProgressError):
+        repo.save(invalid)
+    assert ProgressRepository(path).load() == AppProgress()

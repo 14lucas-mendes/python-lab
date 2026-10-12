@@ -22,7 +22,7 @@ def app(tmp_path):
     copyfile(ROOT / "data" / "roadmap.json", data_dir / "roadmap.json")
     missions_root = tmp_path / "missions"
     copytree(FIXTURES / "missions", missions_root)
-    repository = ProgressRepository(data_dir / "progress.json")
+    repository = ProgressRepository(tmp_path / "lab.sqlite3")
     repository.save(repository.load())
     missions = load_missions(missions_root)
     return PythonLabApp(

@@ -1,37 +1,54 @@
+from importlib import metadata
+import asyncio
+from concurrent.futures import Future, ThreadPoolExecutor
 from io import StringIO
+import shlex
 from pathlib import Path
+from threading import Event
 
 from rich.console import Console
 from rich.text import Text
 
-from textual.app import App, ComposeResult
+from textual.app import App, ComposeResult, ScreenStackError
+from textual.binding import Binding
 from textual.containers import Horizontal, Vertical, VerticalScroll
 from textual.css.query import NoMatches
-from textual.widgets import Input, Label, Markdown, Static
+from textual.widgets import Button, Input, Label, Markdown, Static
+from textual.worker import Worker, WorkerCancelled, WorkerFailed, get_current_worker
 
 from python_lab.app import ApplicationError, PythonLabApp
-from python_lab.learning import HintError, LearningError, PLAN_KEYS
+from python_lab.assistant.errors import ContextError
+from python_lab.learning_commands import LEARNING_ACTIONS
+from python_lab.assistant.service import AssistantService
+from python_lab.workspace import Workspace
+from python_lab.commands import ALIASES, COMMANDS, parse_command
+from python_lab.learning import HintError, LearningError
 from python_lab.models import TestResult
-from python_lab.presentation import test_feedback
+from python_lab.presentation import encoding_safe_console, test_feedback
 from python_lab.progress import ProgressError
 from python_lab.session import SessionError, SessionLog
 from python_lab.tui.screens import ConfirmScreen, ExplainScreen, PlanScreen
 from python_lab.tui.widgets import CommandPalette, Composer, NextStepBar
 
 
-APP_VERSION = "0.3.0"
+APP_VERSION = metadata.version("python-lab")
 
 
 class PythonLabTUI(App[None]):
     CSS_PATH = Path(__file__).with_name("lab.tcss")
+    BINDINGS = [Binding("ctrl+c", "quit_lab", "Cancelar / sair", show=False)]
 
     def __init__(
         self,
         lab: PythonLabApp,
         session_log: SessionLog | None = None,
+        assistant_project: Path | None = None,
+        assistant_service: AssistantService | None = None,
+        assistant_mode: str = "assistant",
+        mode_explicit: bool = False,
     ) -> None:
         super().__init__()
-        from python_lab.cli import ALIASES, COMMANDS, PythonLabCLI
+        from python_lab.cli import PythonLabCLI
 
         self.lab = lab
         self.session_log = session_log
@@ -44,9 +61,23 @@ class PythonLabTUI(App[None]):
             force_terminal=False,
             legacy_windows=False,
         )
-        self.cli = PythonLabCLI(app=lab, console=self.output_console, session_log=session_log)
+        self.cli = PythonLabCLI(app=lab, console=self.output_console, session_log=session_log,
+                                assistant_project=assistant_project, assistant_mode=assistant_mode,
+                                mode_explicit=mode_explicit)
+        self.assistant_project = Workspace(assistant_project).root if assistant_project else None
+        self.assistant_mode = assistant_mode
+        self.assistant_service = assistant_service
+        self._assistant_task: asyncio.Task | None = None
+        self._assistant_cancel: Event | None = None
+        self._assistant_exiting = False
         self.transcript_entries: list[str] = []
         self._testing = False
+        self._test_worker = None
+        self._test_executor: ThreadPoolExecutor | None = None
+        self._test_future: Future | None = None
+        self._test_started = Event()
+        self._test_cleanup_done = Event()
+        self._test_exiting = False
         self._status_timer = None
         self.title = f"Python Lab {APP_VERSION}"
         self.sub_title = self._subtitle()
@@ -60,6 +91,7 @@ class PythonLabTUI(App[None]):
         yield Static(id="last-result", markup=False)
         yield Static(id="actions", markup=False)
         yield CommandPalette(id="palette")
+        yield Button("Cancelar ação (/cancel)", id="assistant-cancel")
         with Vertical(id="composer-wrap"):
             with Horizontal(id="composer-row"):
                 yield Label("lab ›", id="prompt-mark")
@@ -74,6 +106,8 @@ class PythonLabTUI(App[None]):
                 self._show_document(current)
             except ApplicationError as exc:
                 self._append_response(str(exc))
+        elif self.assistant_project is not None:
+            self._append_response(f"Projeto: {self.assistant_project}\nUse /explain-code, /diagnose ou /check.")
         else:
             self._append_response(
                 "Python Lab\n\nEscolha uma missão com /missions. "
@@ -84,11 +118,25 @@ class PythonLabTUI(App[None]):
         palette = self._palette()
         if palette is not None:
             palette.display = False
+        self.query_one("#assistant-cancel", Button).display = False
         composer = self._composer()
         if composer is not None:
             composer.focus()
 
-    def on_unmount(self) -> None:
+    async def on_unmount(self) -> None:
+        if self._testing and self._test_worker is not None:
+            self._test_worker.cancel()
+            await asyncio.to_thread(self._test_cleanup_done.wait)
+        if self._assistant_task is not None:
+            self._assistant_exiting = False
+            self._assistant_cancel.set()
+            task = self._assistant_task
+            task.cancel()
+            try:
+                await task
+            except asyncio.CancelledError:
+                pass
+        await self.cli.assistant_runtime.aclose()
         if self._status_timer is not None:
             self._status_timer.stop()
         self._close_session("Sessão encerrada")
@@ -99,24 +147,39 @@ class PythonLabTUI(App[None]):
     def _palette(self) -> CommandPalette | None:
         try:
             return self._shell().query_one("#palette", CommandPalette)
-        except NoMatches:
+        except (NoMatches, ScreenStackError):
             return None
 
     def _composer(self) -> Composer | None:
         try:
             return self._shell().query_one("#composer", Composer)
-        except NoMatches:
+        except (NoMatches, ScreenStackError):
+            return None
+
+    def _cancel_button(self) -> Button | None:
+        try:
+            return self._shell().query_one("#assistant-cancel", Button)
+        except (NoMatches, ScreenStackError):
             return None
 
     def _next_step_bar(self) -> NextStepBar | None:
         try:
             return self._shell().query_one("#next-step", NextStepBar)
-        except NoMatches:
+        except (NoMatches, ScreenStackError):
             return None
 
     def action_quit_lab(self) -> None:
-        self.lab.persist()
-        self._close_session()
+        if self._testing and self._test_worker is not None:
+            self._test_exiting = True
+            self._test_worker.cancel()
+            self._append_response("Cancelando testes; aguardando limpeza antes de sair...")
+            return
+        if self._assistant_task is not None:
+            self._assistant_exiting = True
+            self._cancel_assistant()
+            return
+        self.cli.exit()
+        self._flush_console()
         self.exit()
 
     def action_composer_escape(self) -> None:
@@ -174,7 +237,10 @@ class PythonLabTUI(App[None]):
         self._apply_palette_selection()
 
     def _should_complete_from_palette(self, value: str) -> bool:
-        command, argument = self._split_command(value)
+        try:
+            command, argument = self._split_command(value)
+        except ValueError:
+            return False
         if command in self.cli.handlers:
             return command == "/start" and not argument
         return True
@@ -208,7 +274,33 @@ class PythonLabTUI(App[None]):
         if not stripped:
             return
         self._append_user(stripped)
-        command, argument = self._split_command(stripped)
+        try:
+            command, argument = self._split_command(stripped)
+        except ValueError as exc:
+            self._append_response(str(exc))
+            self._record(stripped, str(exc))
+            return
+        if command == "/cancel":
+            self._cancel_assistant()
+            return
+        if self._assistant_task is not None:
+            self._append_response("Ação em curso; use /cancel.")
+            return
+        if command == "/project":
+            self.cli._local_assistant_setting(command, parse_command(stripped).args)
+            self.assistant_project = self.cli.assistant_project
+            self._flush_console()
+            self._refresh_status()
+            return
+        if command == "/mode":
+            self.cli._local_assistant_setting(command, parse_command(stripped).args)
+            self.assistant_mode = self.cli.assistant_mode
+            self._flush_console()
+            self._refresh_status()
+            return
+        if command in LEARNING_ACTIONS | {"/explain-code", "/diagnose", "/check", "/review", "/apply", "/verify", "/new"}:
+            self._start_assistant(command, parse_command(stripped).args)
+            return
         if command in {"/mission", "/concepts"}:
             mission_id = argument.strip() or self.lab.progress.current_mission_id
             if not mission_id:
@@ -244,6 +336,104 @@ class PythonLabTUI(App[None]):
         self._refresh_status()
         if not keep:
             self.exit()
+
+    def _start_assistant(self, command: str, args: tuple[str, ...]) -> None:
+        if self._testing:
+            self._append_response("Testes em execução; aguarde a limpeza antes de outra ação.")
+            return
+        try:
+            handlers = self.cli.action_handlers(command, service=self.assistant_service)
+        except ContextError as exc:
+            self._append_response(str(exc))
+            return
+        action = handlers.actions()[command]
+        cancel = self._assistant_cancel = Event()
+        composer = self._composer()
+        if composer is not None:
+            composer.placeholder = "Ação em curso; digite /cancel ou Ctrl+C"
+        button = self._cancel_button()
+        if button is not None:
+            button.display = True
+        self._append_response("Analisando projeto... Use /cancel para interromper.")
+
+        async def run():
+            result = None
+            try:
+                if command in {"/apply", "/exercise-validate", "/exercise-publish", "/exercise-show"}:
+                    async def confirm(preview):
+                        decision = asyncio.get_running_loop().create_future()
+                        modal = ConfirmScreen("Confirmar operação explícita?", diff=preview.message)
+                        def chosen(value):
+                            if not decision.done():
+                                decision.set_result(bool(value))
+                        self.push_screen(modal, chosen)
+                        try:
+                            return await decision
+                        finally:
+                            if self.screen_stack and self.screen is modal:
+                                modal.dismiss(False)
+                    result = await action(args, cancel=cancel, confirm=confirm)
+                else:
+                    result = await action(args, cancel=cancel)
+            except asyncio.CancelledError:
+                # AssistantService and local analysis return only after cleanup.
+                pass
+            except Exception as exc:
+                self._append_response(str(exc))
+            finally:
+                if cancel is self._assistant_cancel:
+                    self._assistant_task = None
+                    self._assistant_cancel = None
+                    button = self._cancel_button()
+                    if button is not None:
+                        button.display = False
+                    if result is not None and (not cancel.is_set() or result.data.get("error_kind") == "execution"):
+                        self._append_response(result.message)
+                        if result.ok:
+                            self._record(command, "Assistência concluída")
+                    elif cancel.is_set():
+                        self._append_response("Ação cancelada.")
+                    composer = self._composer()
+                    if composer is not None:
+                        composer.disabled = False
+                        composer.placeholder = "Digite / para comandos"
+                        composer.focus()
+                    self._refresh_status()
+                    if self._assistant_exiting:
+                        self._assistant_exiting = False
+                        self.action_quit_lab()
+        task = self._assistant_task = asyncio.create_task(run())
+        def pending_cancelled(done):
+            if done.cancelled() and self._assistant_task is done:
+                self._assistant_task = None
+                self._assistant_cancel = None
+                button = self._cancel_button()
+                if button is not None:
+                    button.display = False
+                composer = self._composer()
+                if composer is not None:
+                    composer.disabled = False
+                    composer.placeholder = "Digite / para comandos"
+                    composer.focus()
+                self._append_response("Ação cancelada.")
+                self._refresh_status()
+                if self._assistant_exiting:
+                    self._assistant_exiting = False
+                    self.action_quit_lab()
+        task.add_done_callback(pending_cancelled)
+
+    def on_button_pressed(self, event: Button.Pressed) -> None:
+        if event.button.id == "assistant-cancel":
+            self._cancel_assistant()
+
+    def _cancel_assistant(self) -> None:
+        if self._assistant_task is None:
+            self._append_response("Nenhuma ação em curso.")
+            return
+        assert self._assistant_cancel is not None
+        self._assistant_cancel.set()
+        self._assistant_task.cancel()
+        self._append_response("Cancelando; aguardando limpeza...")
 
     def _open_plan(self) -> None:
         try:
@@ -287,7 +477,7 @@ class PythonLabTUI(App[None]):
             if text is None:
                 self._append_response("Explicação cancelada.")
                 return
-            keep = self.cli.execute(f"/explain {text}")
+            keep = self.cli.execute(f"/explain {shlex.quote(text)}")
             self._flush_console()
             self._refresh_status()
             if not keep:
@@ -314,34 +504,103 @@ class PythonLabTUI(App[None]):
         next_step = self._next_step_bar()
         if next_step is not None:
             next_step.update("Próximo: executando testes...")
-        self.run_worker(
-            self._run_tests_worker,
-            thread=True,
+        self._test_started = Event()
+        self._test_cleanup_done = Event()
+        self._test_future = None
+        self._test_executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="lab-tests")
+        self._test_worker = self.run_worker(
+            self._run_tests_async,
             exclusive=True,
             name="run-tests",
             exit_on_error=False,
         )
+        asyncio.create_task(self._watch_test_worker(self._test_worker))
 
-    def _run_tests_worker(self) -> None:
+    async def _run_tests_async(self) -> None:
+        worker = get_current_worker()
+        assert self._test_executor is not None
+        future = self._test_executor.submit(self._run_tests_worker, self._test_started, worker)
+        self._test_future = future
+        await asyncio.wrap_future(future)
+
+    async def _watch_test_worker(self, worker: Worker) -> None:
         try:
-            result = self.lab.run_current_tests()
-        except Exception as exc:
-            self.call_from_thread(self._on_tests_finished, None, exc)
+            await worker.wait()
+        except (WorkerCancelled, WorkerFailed):
+            pass
+        if worker is not self._test_worker:
             return
-        self.call_from_thread(self._on_tests_finished, result, None)
+        future = self._test_future
+        # A cancelled concurrent Future cannot subsequently enter its callable.
+        # A running Future may not have set _test_started yet, so its callback
+        # remains the only proof that runner cleanup has finished.
+        if future is None:
+            error = worker.error if isinstance(worker.error, Exception) and not worker.is_cancelled else None
+            self._test_cleanup_done.set()
+            self._on_tests_finished(None, error, worker.cancelled_event)
+        elif future.cancel():
+            self._test_cleanup_done.set()
+            self._on_tests_finished(None, None, worker.cancelled_event)
+        elif future.done():
+            error = future.exception()
+            if error is not None:
+                self._test_cleanup_done.set()
+                self._on_tests_finished(None, error, worker.cancelled_event)
 
-    def _on_tests_finished(self, result: TestResult | None, error: Exception | None) -> None:
+    def _run_tests_worker(self, started: Event, worker: Worker) -> None:
+        started.set()
+        if worker.is_cancelled:
+            self._test_cleanup_done.set()
+            self.call_from_thread(self._on_tests_finished, None, None, worker.cancelled_event)
+            return
+        result = error = None
+        try:
+            result = self.lab.run_current_tests(cancel=worker.cancelled_event)
+        except Exception as exc:
+            error = exc
+        finally:
+            # Future cancellation is not process cleanup. This event follows
+            # the real runner/service return and precedes the UI callback.
+            self._test_cleanup_done.set()
+        # Worker.cancel() sets the same Event even though cancelling Textual's
+        # executor future cannot stop this thread. The runner returns only after
+        # process-tree cleanup; only then may the UI release its action slot.
+        self.call_from_thread(
+            self._on_tests_finished, result, error, worker.cancelled_event
+        )
+
+    def _on_tests_finished(self, result: TestResult | None, error: Exception | None, cancel=None) -> None:
+        if cancel is not None and (
+            self._test_worker is None or cancel is not self._test_worker.cancelled_event
+        ):
+            return
+        executor = self._test_executor
+        self._test_executor = None
+        self._test_future = None
+        if executor is not None:
+            executor.shutdown(wait=False, cancel_futures=True)
+        self._test_worker = None
         self._testing = False
         composer = self._composer()
         if composer is not None:
             composer.disabled = False
             composer.placeholder = "Digite / para comandos"
             composer.focus()
+        # The service accepted completion before saving. A late Worker.cancel
+        # cannot turn a committed result (or save error) into cancellation.
+        if (result is not None and result.cancelled) or (
+            result is None and error is None and cancel is not None and cancel.is_set()
+        ):
+            self._append_response("Execução cancelada.")
+            self._refresh_status()
+            self._finish_test_exit()
+            return
         if error is not None:
             self._append_response(str(error))
             self.notify(str(error), severity="error")
             self._record("/test", str(error))
             self._refresh_status()
+            self._finish_test_exit()
             return
         assert result is not None
         output = self._format_test_result(result)
@@ -350,6 +609,14 @@ class PythonLabTUI(App[None]):
         self._record("/test", summary)
         self.notify(summary, severity="information" if result.passed else "error")
         self._refresh_status()
+        self._finish_test_exit()
+
+    def _finish_test_exit(self) -> None:
+        if self._test_exiting:
+            self._test_exiting = False
+            self.cli.exit()
+            self._flush_console()
+            self.exit()
 
     def _run_hint(self, confirm_reference: bool = False) -> None:
         try:
@@ -379,23 +646,31 @@ class PythonLabTUI(App[None]):
         self._run_hint(confirm_reference=True)
 
     def _split_command(self, line: str) -> tuple[str, str]:
-        parts = line.strip().split(maxsplit=1)
-        raw = parts[0].lower() if parts else ""
-        argument = parts[1] if len(parts) > 1 else ""
-        return self.aliases.get(raw, raw), argument
+        command = parse_command(line)
+        return command.name, " ".join(command.args)
 
     def _subtitle(self) -> str:
         current = self.lab.progress.current_mission_id or "nenhuma"
         return f"{self.lab.goal.title} · missão {current}"
 
     def _refresh_status(self) -> None:
+        try:
+            self._update_status()
+        except ApplicationError as exc:
+            message = str(exc)
+            if not self.transcript_entries or self.transcript_entries[-1] != message:
+                self._append_response(message)
+                self.notify(message, severity="error")
+
+    def _update_status(self) -> None:
         self.output_console.size = (max(20, self.size.width - 4), max(1, self.size.height))
-        if self._testing:
+        if self._testing or self._assistant_task is not None:
             return
         next_step = self._next_step_bar()
         if next_step is None:
             return
-        next_step.update_from(self.lab)
+        snapshot = self.lab.status_snapshot()
+        next_step.update_from(self.lab, snapshot)
         self.sub_title = self._subtitle()
         shell = self._shell()
         current = self.lab.progress.current_mission_id
@@ -411,8 +686,10 @@ class PythonLabTUI(App[None]):
         shell.query_one("#mission-header", Static).update(header)
         if current:
             progress = self.lab.current_progress()
-            plan_done = all(str((progress.plan or {}).get(key, "")).strip() for key in PLAN_KEYS)
-            current_tests = self.lab.tests_are_current()
+            plan_done = snapshot.plan_complete
+            current_tests = snapshot.tests_current
+            header += f" · Ajuda máxima: nível {progress.max_assistance_level}"
+            shell.query_one("#mission-header", Static).update(header)
             stages = "   ".join(
                 f"[{'x' if done else ' '}] {label}" for done, label in (
                     (plan_done, "Plano"), (current_tests, "Testes atuais"),
@@ -429,11 +706,15 @@ class PythonLabTUI(App[None]):
             if mission:
                 actions += [f"/mission {mission.id}", f"/start {mission.id}"]
         shell.query_one("#stages", Static).update(stages)
+        if self.assistant_project is not None:
+            actions += ["/explain-code", "/diagnose", "/check", "/review", "/apply", "/verify", "/new", "/mode", "/project off"]
+        else:
+            actions += ["/project"]
         shell.query_one("#actions", Static).update("Ações: " + "  ".join(actions) + "  · / para todos")
-        result = self.lab.last_test_result()
+        result = snapshot.last_result
         if result:
             label = result.summary or ("Testes passaram" if result.passed else "Testes falharam")
-            if current and self.lab.current_progress().tests_passed and not self.lab.tests_are_current():
+            if current and self.lab.current_progress().tests_passed and not snapshot.tests_current:
                 label = "Desatualizado: execute /test novamente. " + label
             result_mission = current or self.lab.last_test_mission_id
             text = f"Último resultado (missão {result_mission}): " + label
@@ -469,6 +750,8 @@ class PythonLabTUI(App[None]):
         if not cleaned:
             return
         self.transcript_entries.append(cleaned)
+        if not self.screen_stack:
+            return
         shell = self._shell()
         shell.query_one("#response", Static).update(Text(cleaned))
         shell.query_one("#response").display = True
@@ -488,17 +771,19 @@ class PythonLabTUI(App[None]):
     def _record(self, command: str, summary: str) -> None:
         if self.session_log is None:
             return
-        try:
-            self.session_log.record(command, summary)
-        except SessionError as exc:
-            self.notify(str(exc), severity="error")
+        failure = self.session_log.try_record(command, summary)
+        if failure is not None:
+            self._append_response(failure)
+            self.notify(failure, severity="error")
 
     def _close_session(self, summary: str | None = None) -> None:
-        if self.session_log is None or self.session_log._current is None:
-            return
-        if self.session_log._current.get("ended_at") is not None:
+        if self.session_log is None or not self.session_log.is_open:
             return
         try:
             self.session_log.close(summary)
-        except SessionError:
-            pass
+        except SessionError as exc:
+            self._append_response(str(exc))
+            if self.screen_stack:
+                self.notify(str(exc), severity="error")
+            else:
+                encoding_safe_console(Console()).print(str(exc), style="red", markup=False)

@@ -1,0 +1,212 @@
+name: tests
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    name: ${{ matrix.os }} / Python ${{ matrix.python }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+        python: ['3.11', '3.12']
+    runs-on: ${{ matrix.os }}
+    env:
+      PYTHON: ${{ matrix.os == 'windows-latest' && '.venv/Scripts/python.exe' || '.venv/bin/python' }}
+      LAB: ${{ matrix.os == 'windows-latest' && '.venv/Scripts/lab.exe' || '.venv/bin/lab' }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python }}
+      - name: Native Linux thread-regression prerequisite
+        if: runner.os == 'Linux'
+        shell: bash
+        run: command -v cc
+      - name: Editable dev install with tested constraints
+        shell: bash
+        run: |
+          python -m venv .venv
+          "$PYTHON" -m pip install -c constraints/dev.txt -e '.[dev]'
+          "$PYTHON" -m pip check
+      - name: Entrypoint and isolated classic smoke
+        shell: bash
+        run: |
+          smoke() {
+            local label="$1" smoke_status output diagnostic
+            shift
+            local smoke_log="$RUNNER_TEMP/python-lab-smoke-$label.log"
+            if "$@" > "$smoke_log" 2>&1; then
+              cat "$smoke_log"
+            else
+              smoke_status=$?
+              cat "$smoke_log"
+              output="$(cat "$smoke_log")"
+              if (( ${#output} > 6000 )); then
+                output="${output: -6000}"
+              fi
+              diagnostic="Command: $*; exit: $smoke_status"$'\n'"$output"
+              diagnostic="${diagnostic//%/%25}"
+              diagnostic="${diagnostic//$'\r'/%0D}"
+              diagnostic="${diagnostic//$'\n'/%0A}"
+              printf '::error title=lab %s smoke::%s\n' "$label" "$diagnostic"
+              return "$smoke_status"
+            fi
+          }
+          smoke help "$LAB" --help
+          smoke version "$LAB" --version
+          smoke practice "$LAB" practice --json --data-dir "$RUNNER_TEMP/python-lab-practice-state"
+          printf '/missions\n/exit\n' | smoke classic "$LAB" --classic --data-dir "$RUNNER_TEMP/python-lab-state"
+      - name: Populated legacy application snapshot migration via installed CLI
+        shell: bash
+        run: |
+          migration_log="$RUNNER_TEMP/python-lab-populated-migration.log"
+          migration_json="$RUNNER_TEMP/python-lab-populated-migration.json"
+          if "$PYTHON" scripts/populated_migration_smoke.py --cli "$LAB" --metadata "$migration_json" > "$migration_log" 2>&1; then
+            cat "$migration_log"
+          else
+            migration_status=$?
+            cat "$migration_log"
+            diagnostic="$(cat "$migration_log")"
+            if (( ${#diagnostic} > 6000 )); then
+              diagnostic="${diagnostic: -6000}"
+            fi
+            diagnostic="populated migration exit: $migration_status"$'\n'"$diagnostic"
+            diagnostic="${diagnostic//%/%25}"
+            diagnostic="${diagnostic//$'\r'/%0D}"
+            diagnostic="${diagnostic//$'\n'/%0A}"
+            printf '::error title=Populated legacy CLI migration::%s\n' "$diagnostic"
+            exit "$migration_status"
+          fi
+      - name: Base assistant and classic checks without optional extras
+        shell: bash
+        run: |
+          base_log="$RUNNER_TEMP/python-lab-base-assistant.log"
+          if "$PYTHON" -m pytest -q tests/test_assistant_cli.py tests/test_assistant_tui.py tests/test_assistant_journey.py tests/test_requested_assistance_display.py tests/test_populated_migration_smoke.py tests/test_legacy_fixture_checkout.py tests/test_learning_cli.py tests/test_learning_tui.py tests/test_review_cli.py tests/test_review_tui.py tests/test_scaffolding_cli.py tests/test_review_adapter_failures.py tests/test_cli_entrypoint.py::test_classic_without_assistant_extra > "$base_log" 2>&1; then
+            cat "$base_log"
+          else
+            base_status=$?
+            cat "$base_log"
+            diagnostic="$(cat "$base_log")"
+            if (( ${#diagnostic} > 6000 )); then
+              diagnostic="${diagnostic: -6000}"
+            fi
+            diagnostic="base pytest exit: $base_status"$'\n'"$diagnostic"
+            diagnostic="${diagnostic//%/%25}"
+            diagnostic="${diagnostic//$'\r'/%0D}"
+            diagnostic="${diagnostic//$'\n'/%0A}"
+            printf '::error title=Native base assistant suite::%s\n' "$diagnostic"
+            exit "$base_status"
+          fi
+      - name: Install optional local analysis with tested constraints
+        shell: bash
+        run: |
+          "$PYTHON" -m pip install -c constraints/dev.txt -c constraints/analysis.txt -e '.[analysis]'
+          "$PYTHON" -m pip check
+      - name: Install official assistant SDK with tested constraints
+        shell: bash
+        run: |
+          "$PYTHON" -m pip install -c constraints/dev.txt -c constraints/assistant.txt -e '.[assistant]'
+          "$PYTHON" -m pip check
+      - name: Offline official SDK and analysis adapter proofs
+        shell: bash
+        run: |
+          sdk_log="$RUNNER_TEMP/python-lab-offline-sdk.log"
+          sdk_xml="$RUNNER_TEMP/python-lab-offline-sdk.xml"
+          if "$PYTHON" -m pytest -q tests/test_analysis.py tests/test_assistant_provider.py tests/test_assistant_cli.py tests/test_assistant_tui.py tests/test_assistant_journey.py tests/test_requested_assistance_display.py tests/test_populated_migration_smoke.py tests/test_legacy_fixture_checkout.py tests/test_learning_cli.py tests/test_learning_tui.py tests/test_review_cli.py tests/test_review_tui.py tests/test_scaffolding_cli.py tests/test_review_adapter_failures.py --junitxml="$sdk_xml" > "$sdk_log" 2>&1; then
+            cat "$sdk_log"
+          else
+            sdk_status=$?
+            cat "$sdk_log"
+            diagnostic="$("$PYTHON" scripts/ci_failure_summary.py "$sdk_log" --junit "$sdk_xml")" || diagnostic="Failure summary unavailable; see retained SDK log and JUnit."
+            if (( ${#diagnostic} > 6000 )); then
+              diagnostic="${diagnostic: -6000}"
+            fi
+            diagnostic="offline SDK/analysis pytest exit: $sdk_status"$'\n'"$diagnostic"
+            diagnostic="${diagnostic//%/%25}"
+            diagnostic="${diagnostic//$'\r'/%0D}"
+            diagnostic="${diagnostic//$'\n'/%0A}"
+            printf '::error title=Offline official SDK and analysis adapters::%s\n' "$diagnostic"
+            exit "$sdk_status"
+          fi
+      - name: Native PowerShell installer validation
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $installerLog = Join-Path $env:RUNNER_TEMP 'python-lab-installer.log'
+          try {
+            & ./scripts/install-lab.ps1 -CheckOnly *> $installerLog
+            if ($LASTEXITCODE -ne 0) { throw "Installer check failed: $LASTEXITCODE" }
+            Get-Content -Raw $installerLog | Write-Host
+          } catch {
+            $failure = $_
+            $output = if (Test-Path $installerLog) { Get-Content -Raw $installerLog } else { '' }
+            Write-Host $output
+            $diagnostic = "$output`n$($failure | Out-String)$($failure.ScriptStackTrace)"
+            if ($diagnostic.Length -gt 6000) { $diagnostic = $diagnostic.Substring($diagnostic.Length - 6000) }
+            $diagnostic = $diagnostic.Replace('%', '%25').Replace("`r", '%0D').Replace("`n", '%0A')
+            Write-Output "::error title=Native PowerShell installer validation::$diagnostic"
+            throw
+          }
+      - name: Full suite including native runner, TUI and installer regressions
+        shell: bash
+        run: |
+          suite_log="$RUNNER_TEMP/python-lab-pytest.log"
+          suite_xml="$RUNNER_TEMP/python-lab-pytest.xml"
+          if "$PYTHON" -m pytest -ra --junitxml="$suite_xml" > "$suite_log" 2>&1; then
+            cat "$suite_log"
+          else
+            suite_status=$?
+            cat "$suite_log"
+            diagnostic="$("$PYTHON" scripts/ci_failure_summary.py "$suite_log" --junit "$suite_xml")"
+            if (( ${#diagnostic} > 6000 )); then
+              diagnostic="${diagnostic: -6000}"
+            fi
+            diagnostic="pytest exit: $suite_status"$'\n'"$diagnostic"
+            diagnostic="${diagnostic//%/%25}"
+            diagnostic="${diagnostic//$'\r'/%0D}"
+            diagnostic="${diagnostic//$'\n'/%0A}"
+            printf '::error title=Native pytest suite::%s\n' "$diagnostic"
+            exit "$suite_status"
+          fi
+      - name: Nine clean-venv template functional smokes
+        shell: bash
+        env:
+          PYTHON_LAB_TEMPLATE_SMOKE: '1'
+        run: |
+          smoke_log="$RUNNER_TEMP/python-lab-template-smoke.log"
+          smoke_xml="$RUNNER_TEMP/python-lab-template-smoke.xml"
+          if "$PYTHON" -m pytest tests/test_template_smoke.py -q -s --junitxml="$smoke_xml" > "$smoke_log" 2>&1; then
+            cat "$smoke_log"
+          else
+            smoke_status=$?
+            cat "$smoke_log"
+            diagnostic="$("$PYTHON" scripts/ci_failure_summary.py "$smoke_log" --junit "$smoke_xml")"
+            if (( ${#diagnostic} > 6000 )); then
+              diagnostic="${diagnostic: -6000}"
+            fi
+            diagnostic="template smoke exit: $smoke_status"$'\n'"$diagnostic"
+            diagnostic="${diagnostic//%/%25}"
+            diagnostic="${diagnostic//$'\r'/%0D}"
+            diagnostic="${diagnostic//$'\n'/%0A}"
+            printf '::error title=Clean-venv template smoke::%s\n' "$diagnostic"
+            exit "$smoke_status"
+          fi
+      - name: Retain pytest diagnostics
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: pytest-diagnostics-${{ matrix.os }}-${{ matrix.python }}
+          path: |
+            ${{ runner.temp }}/python-lab-*.log
+            ${{ runner.temp }}/python-lab-*.xml
+            ${{ runner.temp }}/python-lab-populated-migration.json
+          if-no-files-found: ignore
+          retention-days: 7

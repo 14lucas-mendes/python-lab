@@ -1,0 +1,31 @@
+{
+  "kind": "representative controlled application-generated fixture; not a personal profile",
+  "source_sha": "d7a890458ec072aee7ee6ab17d2d24a621f9de2a",
+  "entrypoint": "python <private snapshot>/lab.py --classic",
+  "source_export": "git archive d7a890458ec072aee7ee6ab17d2d24a621f9de2a",
+  "workflows": [
+    [
+      "/start 001",
+      "/plan",
+      "records",
+      "totals",
+      "accumulate",
+      "empty input",
+      "/test",
+      "/hint",
+      "/status",
+      "/exit"
+    ],
+    [
+      "/hint",
+      "/status",
+      "/exit"
+    ]
+  ],
+  "import_resolution": "python_lab.cli resolved inside the private archived snapshot",
+  "learner_and_reference_python_bytes_unchanged": true,
+  "sha256": {
+    "progress.json": "9e161f9c0b4b76dea48178efaf1a02284843419fe9ec8cbb7d4ba6ebc0919661",
+    "sessions.json": "f2ac65e5c2084dfe09d8b2789e91e24c2bf214fec1a6fb9c4da8c9d4bc730e44"
+  }
+}

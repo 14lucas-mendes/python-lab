@@ -1,5 +1,6 @@
 from dataclasses import dataclass, field
 from pathlib import Path
+from uuid import uuid4
 
 
 @dataclass(frozen=True)
@@ -57,6 +58,8 @@ class MissionProgress:
     tested_solution_path: str | None = None
     tested_solution_fingerprint: str | None = None
     attempt_history: list[dict[str, object]] = field(default_factory=list)
+    max_assistance_level: int = 0
+    attempt_id: str = field(default_factory=lambda: uuid4().hex)
 
 
 @dataclass
@@ -73,3 +76,4 @@ class TestResult:
     output: str
     summary: str = ""
     diagnostics: tuple[str, ...] = ()
+    cancelled: bool = False
