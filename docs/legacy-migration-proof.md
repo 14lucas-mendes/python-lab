@@ -61,6 +61,7 @@ os hashes de entrada permanecem iguais. O CI executa o comando com o `lab`
 instalado em Ubuntu/Windows × Python 3.11/3.12 e retém log limitado e JSON de
 contagens/hashes/resultados junto aos diagnósticos/JUnit existentes. Não retém
 os diretórios de estado.
+Todas as verificações permanecem ativas com `python -O`, `python -OO` ou `PYTHONOPTIMIZE`.
 
 Para conferir um perfil legado preservado localmente, inclusive sem missões:
 

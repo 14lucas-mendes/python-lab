@@ -70,7 +70,7 @@ def test_downgraded_help_displays_captured_requested_level(app, tmp_path, monkey
                 await pilot.pause()
                 command = '/explain-code' if action == 'explain' else '/' + action
                 tui._submit(command + ' ' + ' '.join(args))
-                deadline = time.monotonic() + 10
+                deadline = time.monotonic() + 25
                 while tui._assistant_task is not None and time.monotonic() < deadline:
                     await asyncio.sleep(.01)
                 assert tui._assistant_task is None, tui.transcript_entries

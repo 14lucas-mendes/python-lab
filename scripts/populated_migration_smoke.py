@@ -19,6 +19,15 @@ ROOT = Path(__file__).resolve().parents[1]
 FIXTURE = ROOT / 'tests/fixtures/legacy-populated'
 
 
+class MigrationProofError(RuntimeError):
+    """A proof condition failed, including under interpreter optimization."""
+
+
+def check(condition, message):
+    if not condition:
+        raise MigrationProofError(message)
+
+
 def hashes(inputs):
     return {name: hashlib.sha256(raw).hexdigest() for name, raw in inputs.items()}
 
@@ -37,8 +46,8 @@ def expected_progress(raw):
 
 def snapshot(database):
     with closing(sqlite3.connect(f'{database.resolve().as_uri()}?mode=ro', uri=True)) as db:
-        assert db.execute('PRAGMA integrity_check').fetchone() == ('ok',), 'SQLite integrity failed'
-        assert db.execute('PRAGMA foreign_key_check').fetchall() == [], 'SQLite foreign keys failed'
+        check(db.execute('PRAGMA integrity_check').fetchone() == ('ok',), 'SQLite integrity failed')
+        check(db.execute('PRAGMA foreign_key_check').fetchall() == [], 'SQLite foreign keys failed')
         tables = ('progress', 'sessions', 'events', 'migrations', 'assistance_events')
         rows = {table: db.execute(f'SELECT * FROM {table} ORDER BY rowid').fetchall() for table in tables}
         progress = json.loads(rows['progress'][0][1])
@@ -56,13 +65,13 @@ def prove(source, *, allow_empty_progress=False, cli=None):
     provenance_path = source / 'provenance.json'
     provenance = json.loads(provenance_path.read_text(encoding='utf-8')) if provenance_path.exists() else {}
     if provenance:
-        assert provenance['sha256'] == input_hashes, 'fixture hash mismatch'
+        check(provenance['sha256'] == input_hashes, 'fixture hash mismatch')
     expected = expected_progress(inputs['progress.json'])
     expected_sessions = json.loads(inputs['sessions.json'])['sessions']
     counts = dict(missions=len(expected['missions']), sessions=len(expected_sessions),
                   events=sum(len(s['events']) for s in expected_sessions))
-    assert counts['missions'] or allow_empty_progress, 'populated progress required'
-    assert counts['sessions'] >= 2 and counts['events'] > 0, 'populated session history required'
+    check(counts['missions'] or allow_empty_progress, 'populated progress required')
+    check(counts['sessions'] >= 2 and counts['events'] > 0, 'populated session history required')
     command = [str(cli)] if cli else [sys.executable, str(ROOT / 'lab.py')]
     # Redirected Windows stdout can otherwise use a different code page from
     # the parent decoder. Override only this subprocess's stream encoding.
@@ -78,23 +87,23 @@ def prove(source, *, allow_empty_progress=False, cli=None):
         for index in range(2):
             result = subprocess.run([*command, 'migrate', '--from-dir', str(copies), '--data-dir', str(state)],
                                     cwd=ROOT, env=child_env, capture_output=True, text=True, encoding='utf-8', timeout=30)
-            assert result.returncode == 0, f'CLI migration {index + 1} failed (exit {result.returncode})'
+            check(result.returncode == 0, f'CLI migration {index + 1} failed (exit {result.returncode})')
             expected_message = 'Estado importado.' if index == 0 else 'Estado já importado.'
-            assert expected_message in result.stdout, f'CLI migration {index + 1} result missing'
+            check(expected_message in result.stdout, f'CLI migration {index + 1} result missing')
             progress, sessions, rows = snapshot(state / 'lab.sqlite3')
-            assert progress == expected, 'full semantic progress mismatch'
-            assert sessions == expected_sessions, 'exact sessions/events mismatch'
-            assert rows['migrations'] == [(str(copies.resolve()), digest)], 'import marker mismatch'
-            assert not rows['assistance_events'], 'migration invented assistance events'
+            check(progress == expected, 'full semantic progress mismatch')
+            check(sessions == expected_sessions, 'exact sessions/events mismatch')
+            check(rows['migrations'] == [(str(copies.resolve()), digest)], 'import marker mismatch')
+            check(not rows['assistance_events'], 'migration invented assistance events')
             if before is not None:
-                assert rows == before, 'second CLI migration changed rows or revision'
+                check(rows == before, 'second CLI migration changed rows or revision')
             before = rows
             for name, raw in inputs.items():
                 backup = state / 'backups' / f'{name}.{input_hashes[name]}.bak'
-                assert backup.read_bytes() == raw, 'backup bytes mismatch'
-                assert (copies / name).read_bytes() == raw, 'temporary input changed'
-        assert len(list((state / 'backups').iterdir())) == len(inputs), 'duplicate backups'
-    assert {name: (source / name).read_bytes() for name in inputs} == inputs, 'original input changed'
+                check(backup.read_bytes() == raw, 'backup bytes mismatch')
+                check((copies / name).read_bytes() == raw, 'temporary input changed')
+        check(len(list((state / 'backups').iterdir())) == len(inputs), 'duplicate backups')
+    check({name: (source / name).read_bytes() for name in inputs} == inputs, 'original input changed')
     return {'result': 'passed', 'source_sha': provenance.get('source_sha'), 'counts': counts,
             'input_sha256': input_hashes,
             'checks': ['full_progress', 'exact_sessions_events', 'backup_bytes', 'sqlite_integrity',
@@ -110,7 +119,7 @@ def main():
     args = parser.parse_args()
     try:
         metadata = prove(args.source, allow_empty_progress=args.allow_empty_progress, cli=args.cli)
-    except (AssertionError, OSError, ValueError, subprocess.SubprocessError, sqlite3.Error) as exc:
+    except (MigrationProofError, OSError, ValueError, subprocess.SubprocessError, sqlite3.Error) as exc:
         # No source contents, credentials, environment, or state directory output.
         print(f'Migration proof failed: {exc}', file=sys.stderr)
         return 1

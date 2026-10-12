@@ -298,6 +298,7 @@ comandos estão em [docs/legacy-migration-proof.md](docs/legacy-migration-proof.
 Ele executa a CLI atual duas vezes e compara todo o progresso, as inferências de
 ajuda/identidade legadas, sessões/eventos, backups e linhas SQLite. O CI executa a
 mesma prova nos quatro ambientes nativos e retém somente contagens, hashes e resultados.
+Todas as verificações permanecem ativas com `python -O`, `python -OO` ou `PYTHONOPTIMIZE`.
 O fixture é representativo gerado, não um perfil pessoal nem evidência de missão concluída.
 
 Para ajuda fora da sessão, use `lab --help`. O ambiente suportado é Python 3.11 ou mais recente; pytest é instalado pelo extra `dev` e é necessário para executar as missões.
