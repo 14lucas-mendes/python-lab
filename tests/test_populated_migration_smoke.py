@@ -1,6 +1,7 @@
 """Run the portable populated migration proof through the actual CLI."""
 
 import hashlib
+from contextlib import closing
 import json
 from pathlib import Path
 import subprocess
@@ -58,6 +59,13 @@ def test_proof_detects_semantic_or_byte_loss_after_real_cli_import(monkeypatch, 
     smoke = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(smoke)
     run = subprocess.run
+    connect = sqlite3.connect
+    connections = []
+
+    def track_connection(*args, **kwargs):
+        db = connect(*args, **kwargs)
+        connections.append(db)
+        return db
 
     def damage_actual_import(command, **kwargs):
         result = run(command, **kwargs)
@@ -66,7 +74,7 @@ def test_proof_detects_semantic_or_byte_loss_after_real_cli_import(monkeypatch, 
             if damage == 'backup':
                 next((state / 'backups').iterdir()).write_bytes(b'lost bytes')
             else:
-                with sqlite3.connect(state / 'lab.sqlite3') as db:
+                with closing(sqlite3.connect(state / 'lab.sqlite3')) as db, db:
                     if damage == 'progress':
                         payload = json.loads(db.execute('SELECT payload FROM progress').fetchone()[0])
                         payload['missions']['001']['max_assistance_level'] = 0
@@ -76,5 +84,13 @@ def test_proof_detects_semantic_or_byte_loss_after_real_cli_import(monkeypatch, 
         return result
 
     monkeypatch.setattr(smoke.subprocess, 'run', damage_actual_import)
+    monkeypatch.setattr(smoke.sqlite3, 'connect', track_connection)
     with pytest.raises(AssertionError, match=diagnostic):
         smoke.prove(FIXTURE)
+    # SQLite's transaction context commits but does not close. Holding these
+    # actual connections makes the Windows temporary-file cleanup contract
+    # observable on every platform, rather than relying on garbage collection.
+    assert connections
+    for db in connections:
+        with pytest.raises(sqlite3.ProgrammingError, match='closed'):
+            db.execute('SELECT 1')

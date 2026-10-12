@@ -23,7 +23,7 @@ def test_downgraded_help_displays_captured_requested_level(app, tmp_path, monkey
     source = app.current_mission().solution_path
     source.parent.mkdir(parents=True, exist_ok=True)
     source.write_text('value = 1 / 0\n', encoding='utf-8')
-    name = str(source.relative_to(tmp_path))
+    name = source.relative_to(tmp_path).as_posix()
     (tmp_path / 'trace.txt').write_text('ZeroDivisionError: division by zero\n', encoding='utf-8')
     before = source.read_bytes()
     attempt = app.current_progress().attempt_id
