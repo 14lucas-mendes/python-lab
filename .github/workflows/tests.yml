@@ -2,6 +2,7 @@ name: tests
 
 on:
   push:
+    branches: [main]
   pull_request:
   workflow_dispatch:
 
@@ -96,7 +97,24 @@ jobs:
       - name: Offline official SDK and analysis adapter proofs
         shell: bash
         run: |
-          "$PYTHON" -m pytest -q tests/test_analysis.py tests/test_assistant_provider.py tests/test_assistant_cli.py tests/test_assistant_tui.py tests/test_assistant_journey.py tests/test_learning_cli.py tests/test_learning_tui.py tests/test_review_cli.py tests/test_review_tui.py tests/test_scaffolding_cli.py tests/test_review_adapter_failures.py
+          sdk_log="$RUNNER_TEMP/python-lab-offline-sdk.log"
+          sdk_xml="$RUNNER_TEMP/python-lab-offline-sdk.xml"
+          if "$PYTHON" -m pytest -q tests/test_analysis.py tests/test_assistant_provider.py tests/test_assistant_cli.py tests/test_assistant_tui.py tests/test_assistant_journey.py tests/test_learning_cli.py tests/test_learning_tui.py tests/test_review_cli.py tests/test_review_tui.py tests/test_scaffolding_cli.py tests/test_review_adapter_failures.py --junitxml="$sdk_xml" > "$sdk_log" 2>&1; then
+            cat "$sdk_log"
+          else
+            sdk_status=$?
+            cat "$sdk_log"
+            diagnostic="$("$PYTHON" scripts/ci_failure_summary.py "$sdk_log" --junit "$sdk_xml")" || diagnostic="Failure summary unavailable; see retained SDK log and JUnit."
+            if (( ${#diagnostic} > 6000 )); then
+              diagnostic="${diagnostic: -6000}"
+            fi
+            diagnostic="offline SDK/analysis pytest exit: $sdk_status"$'\n'"$diagnostic"
+            diagnostic="${diagnostic//%/%25}"
+            diagnostic="${diagnostic//$'\r'/%0D}"
+            diagnostic="${diagnostic//$'\n'/%0A}"
+            printf '::error title=Offline official SDK and analysis adapters::%s\n' "$diagnostic"
+            exit "$sdk_status"
+          fi
       - name: Native PowerShell installer validation
         if: runner.os == 'Windows'
         shell: pwsh
@@ -160,3 +178,13 @@ jobs:
             printf '::error title=Clean-venv template smoke::%s\n' "$diagnostic"
             exit "$smoke_status"
           fi
+      - name: Retain pytest diagnostics
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: pytest-diagnostics-${{ matrix.os }}-${{ matrix.python }}
+          path: |
+            ${{ runner.temp }}/python-lab-*.log
+            ${{ runner.temp }}/python-lab-*.xml
+          if-no-files-found: ignore
+          retention-days: 7

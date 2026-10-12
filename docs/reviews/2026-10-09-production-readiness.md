@@ -1,6 +1,39 @@
-# Revisão técnica do Python Lab — 9 de outubro de 2026
+# Auditoria histórica do Python Lab — 9 de outubro de 2026
 
-O Lab tem uma boa base para uso pessoal: regras de aprendizado separadas da interface, gravação atômica de JSON, verificação de alterações na solução e testes funcionais da TUI. A prioridade para uma release local robusta é proteger os dados quando duas instâncias estão abertas e tratar falhas de entrada/saída sem derrubar a sessão. A suíte atual passa, mas não cobre os problemas reproduzidos abaixo.
+> **Escopo histórico:** a auditoria abaixo descreve somente o commit
+> `d7a890458ec072aee7ee6ab17d2d24a621f9de2a`. O relatório e o diagnóstico foram
+> adicionados em `c6c9fd7b53c1bf21c0f4b6ddee29bd664d999483`, após a auditoria.
+> Os 123 testes, números de linhas e medições abaixo pertencem àquele snapshot;
+> não representam a suíte, performance ou arquitetura atuais. O restante do
+> texto preserva os achados e as propostas originais como registro histórico.
+
+## Status dos achados em `5360804`
+
+Esta tabela descreve o código em `53608044ce15ac65fbbbfb8803e7645f6da04a6e`,
+antecessor das correções de feedback do PR #4. Os links apontam para os módulos
+e as regressões mantidos no checkout; os resultados de testes atuais devem ser
+consultados na CI e no relatório de validação do PR, não nos números históricos abaixo.
+
+| ID | Status nesse snapshot | Implementação e regressão atual |
+| --- | --- | --- |
+| R1 | Corrigido: sessões e eventos são transacionais em SQLite; instâncias intercaladas preservam ambas as sessões. | [session.py](../../python_lab/session.py); [test_session_interleaving_preserves_both](../../tests/test_storage_concurrency.py), [test_session_retention_reserves_total_capacity_for_all_open_sessions](../../tests/test_final_review_regressions.py). |
+| R2 | Corrigido: payload e revisão vêm da mesma leitura; `BEGIN IMMEDIATE` e compare-and-swap rejeitam writers desatualizados. | [progress.py](../../python_lab/progress.py); [test_simultaneous_progress_writers](../../tests/test_storage_concurrency.py), [test_concurrent_repository_save_is_rejected_without_overwriting](../../tests/test_progress.py). |
+| R3 | Corrigido: a explicação vazia na TUI não lê stdin nem conclui a missão. | [tui/app.py](../../python_lab/tui/app.py); [test_blank_explanation_never_reads_stdin](../../tests/test_tui.py). |
+| R4 | Corrigido: falhas de histórico ficam visíveis e permitem continuar/encerrar sem recursão no log. | [cli.py](../../python_lab/cli.py), [tui/app.py](../../python_lab/tui/app.py); [test_history_and_close_failures_allow_exit](../../tests/test_cli.py), [test_tui_history_failures_remain_visible_and_allow_exit](../../tests/test_tui.py), [test_session_start_failure_keeps_classic_available](../../tests/test_cli_entrypoint.py). |
+| R5 | Corrigido: codecs normalizam UTF-8/JSON/tipos inválidos em erros de domínio; missão ativa removida tem erro acionável; migração explícita preserva backups. | [storage/codecs.py](../../python_lab/storage/codecs.py), [storage/migration.py](../../python_lab/storage/migration.py); [test_invalid_mission_fields_are_domain_errors](../../tests/test_state_codecs.py), [test_invalid_utf8_is_a_domain_error](../../tests/test_state_codecs.py), [test_removed_active_mission_is_actionable](../../tests/test_cli.py), [regressões de migração](../../tests/test_state_migration.py). |
+| R6 | Corrigido: runner gerencia grupos POSIX e Job Objects Windows e espera a limpeza de descendentes no timeout/cancelamento. | [runtime/processes.py](../../python_lab/runtime/processes.py), [runtime/windows.py](../../python_lab/runtime/windows.py); [test_timeout_stops_descendants](../../tests/test_process_runner.py), [test_cancel_stops_descendants](../../tests/test_process_runner.py), [regressões Windows](../../tests/test_windows_job.py). |
+| R7 | Corrigido: IDs duplicados e `future` não booleano são rejeitados; referências de skills são validadas antes de carregar estado. | [catalog.py](../../python_lab/catalog.py), [app.py](../../python_lab/app.py); [test_duplicate_skill_is_rejected](../../tests/test_catalog.py), [test_skill_future_requires_boolean](../../tests/test_catalog.py), [test_unknown_mission_skill_is_rejected_before_loading_state](../../tests/test_catalog.py). |
+
+O diagnóstico antigo foi removido do checkout corrente: dependia de
+`ProgressRepository._current_revision`, que não existe na API SQLite. A leitura
+desse atributo lança `AttributeError`; monkeypatches no método antigo não
+exercitam o controle de revisão atual. A suíte regular acima substitui os probes.
+O [script histórico](https://github.com/14lucas-mendes/python-lab/blob/c6c9fd7b53c1bf21c0f4b6ddee29bd664d999483/docs/reviews/reproduce_findings.py)
+permanece disponível no commit que o introduziu, apenas para consultar a evidência original.
+
+## Registro original da auditoria de `d7a8904`
+
+O Lab tem uma boa base para uso pessoal: regras de aprendizado separadas da interface, gravação atômica de JSON, verificação de alterações na solução e testes funcionais da TUI. A prioridade para uma release local robusta é proteger os dados quando duas instâncias estão abertas e tratar falhas de entrada/saída sem derrubar a sessão. A suíte daquele snapshot passa, mas não cobre os problemas reproduzidos abaixo.
 
 ## Escopo e evidência
 
@@ -134,7 +167,7 @@ O dicionário aceita sobrescrever um ID existente. `bool(item.get("future", Fals
 
 **Aceite:** duplicação, `"false"`, números e referência desconhecida produzem `CatalogError`; o catálogo atual continua válido.
 
-## Performance: resultados atuais e risco de crescimento
+## Performance: medições históricas e risco de crescimento
 
 As medições abaixo são amostras na máquina desta revisão, com caches quentes. Não são SLOs, percentis de produção nem comparações entre plataformas.
 
@@ -194,15 +227,15 @@ Para importação de catálogos de terceiros, validar que caminhos de testes/sol
 
 Não há workflow versionado em `.github/` nem lockfile no commit analisado. Para release reprodutível, escolher constraints/lock para o ambiente de desenvolvimento e manter limites de compatibilidade no manifesto. CI deve executar as referências e jornadas reais, não apenas lint. Ruff/type checking podem ser introduzidos gradualmente após os contratos de estado/resultado serem definidos.
 
-## Como reproduzir
+## Reprodução histórica em checkout de `d7a8904`
 
-Com as dependências `dev` instaladas, a partir da raiz do checkout:
+Os comandos abaixo documentam a reprodução original, não são instruções para o checkout atual. Usavam as dependências `dev` do snapshot auditado e o script disponível no permalink acima:
 
 ```bash
 .venv/bin/python -m pytest
 .venv/bin/python docs/reviews/reproduce_findings.py --benchmark
 ```
 
-No Windows, substituir `.venv/bin/python` por `.venv\Scripts\python.exe`; o diagnóstico ainda precisa ser validado nessa plataforma. [reproduce_findings.py](reproduce_findings.py) gera estado e testes somente em `TemporaryDirectory`. A prova de timeout cria um filho finito, que encerra por conta própria após dois segundos. Não copia referências para starters nem altera progresso real.
+No Windows, substituir `.venv/bin/python` por `.venv\Scripts\python.exe`; o diagnóstico ainda precisa ser validado nessa plataforma. [script histórico](https://github.com/14lucas-mendes/python-lab/blob/c6c9fd7b53c1bf21c0f4b6ddee29bd664d999483/docs/reviews/reproduce_findings.py) gera estado e testes somente em `TemporaryDirectory`. A prova de timeout cria um filho finito, que encerra por conta própria após dois segundos. Não copia referências para starters nem altera progresso real.
 
 O JSON retornado contém `reproduced: true` quando o defeito aparece. **Exit code zero significa que os diagnósticos executaram, não que os bugs foram corrigidos ou que o sistema está pronto para produção.** A barreira de R2 e a captura de stdin de R3 controlam o interleaving/entrada para tornar a demonstração segura e repetível. Para fixes futuros, converter cada cenário em regressão que exige o comportamento corrigido na suíte regular.

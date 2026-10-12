@@ -412,3 +412,90 @@ def test_builtin_hint_event_reports_its_level_after_prior_full_help(app):
     assert hint[1:3] == ('hint', 1)
     assert app.current_progress().max_assistance_level == 4
     assert app.current_progress().reference_viewed
+
+
+@pytest.mark.parametrize('action', ['explain', 'review'])
+@pytest.mark.parametrize('requested,declared', [(4, 2), (3, 1), (2, 0), (1, 0), (0, 0)])
+def test_downgraded_model_help_records_requested_level_in_active_attempt(app, tmp_path, action, requested, declared):
+    from dataclasses import replace
+    from python_lab.assistant.history import ConversationRepository
+    from python_lab.assistant.models import ReviewReply
+    from python_lab.assistant.patches import PatchService
+    from python_lab.assistant.review import ReviewService
+    from python_lab.assistant.service import AssistantService
+    from python_lab.workspace import Workspace
+    from tests.helpers.assistant import RecordingProvider, sample_answer, sample_request
+    from tests.test_assistant_service import FakeAnalysis, snapshot
+    from tests.test_review import Provider
+    app.start('001')
+    attempt = app.current_progress().attempt_id
+    captured = snapshot(tmp_path)
+    history = ConversationRepository(app.repository.path)
+    req = replace(sample_request(captured, level=requested, mission_id='001'), action=action)
+    answer = sample_answer(captured, level=declared)
+    if action == 'review':
+        service = ReviewService(FakeAnalysis(), Provider(ReviewReply(answer, ())),
+            PatchService(Workspace(tmp_path), tmp_path / 'state'), history,
+            on_assistance=app.record_assistance, capture_attempt=app.capture_assistance_attempt)
+        result = asyncio.run(service.review(req)).advice
+    else:
+        service = AssistantService(RecordingProvider(answer), FakeAnalysis(), history,
+                                   on_full_solution=app.record_full_solution)
+        result = asyncio.run(service.execute(req))
+    assert result.assistance_level == declared
+    progress = app.current_progress()
+    assert progress.max_assistance_level == requested
+    assert progress.reference_viewed is (requested == 4)
+    assert progress.status == 'started' and app.progress.evidence == []
+    assert app.skill_states() == {}  # Help alone never approves a skill.
+    assert app.repository.load().missions['001'].max_assistance_level == requested
+    with connection(app.repository.path) as db:
+        history_id, history_level = db.execute('SELECT request_id, level FROM conversations').fetchone()
+    assert history_level == requested
+    assert rows(app.repository.path) == [('001', action, requested, history_id, attempt)]
+    if requested == 4:
+        from copy import deepcopy
+        from python_lab.learning import complete_mission
+        completion = deepcopy(app.repository.load().missions['001'])
+        completion.plan = {key: 'ok' for key in ('input', 'output', 'steps', 'risks')}
+        completion.tests_passed = True
+        completion.explanation = 'Verifiquei o contrato'
+        evidence = complete_mission(app.current_mission(), completion, [])
+        assert evidence and all(item['result'] == 'practicing' for item in evidence)
+        assert all(item['assistance_level'] == 4 for item in evidence)
+        assert app.progress.evidence == []
+
+
+@pytest.mark.parametrize('action', ['explain', 'review'])
+def test_above_requested_help_records_no_event_or_history(app, tmp_path, action):
+    from dataclasses import replace
+    from python_lab.assistant.errors import AssistantError
+    from python_lab.assistant.history import ConversationRepository
+    from python_lab.assistant.models import ReviewReply
+    from python_lab.assistant.patches import PatchService
+    from python_lab.assistant.review import ReviewService
+    from python_lab.assistant.service import AssistantService
+    from python_lab.workspace import Workspace
+    from tests.helpers.assistant import RecordingProvider, sample_answer, sample_request
+    from tests.test_assistant_service import FakeAnalysis, snapshot
+    from tests.test_review import Provider
+    app.start('001')
+    captured = snapshot(tmp_path)
+    history = ConversationRepository(app.repository.path)
+    req = replace(sample_request(captured, level=1, mission_id='001'), action=action)
+    answer = sample_answer(captured, level=2)
+    if action == 'review':
+        service = ReviewService(FakeAnalysis(), Provider(ReviewReply(answer, ())),
+            PatchService(Workspace(tmp_path), tmp_path / 'state'), history,
+            on_assistance=app.record_assistance, capture_attempt=app.capture_assistance_attempt)
+        operation = service.review(req)
+    else:
+        service = AssistantService(RecordingProvider(answer), FakeAnalysis(), history,
+                                   on_full_solution=app.record_full_solution)
+        operation = service.execute(req)
+    with pytest.raises(AssistantError, match='nível'):
+        asyncio.run(operation)
+    assert rows(app.repository.path) == []
+    assert app.current_progress().max_assistance_level == 0
+    with connection(app.repository.path) as db:
+        assert db.execute("SELECT name FROM sqlite_master WHERE name='conversations'").fetchone() is None

@@ -376,3 +376,14 @@ def test_repeated_cancellation_keeps_real_descendant_cleanup_boundary(tmp_path):
     asyncio.run(exercise())
     assert provider.requests == []
     assert not history.database_path.exists()
+
+
+def test_legacy_callback_uses_requested_level(tmp_path):
+    requested, declared = 4, 2
+    captured = snapshot(tmp_path)
+    called = []
+    assistant, _, history = service(tmp_path, sample_answer(captured, level=declared), callback=called.append)
+    answer = asyncio.run(assistant.execute(sample_request(captured, level=requested, mission_id='001')))
+    assert answer.assistance_level == declared  # Informational response remains intact.
+    assert rows(history.database_path)[0][4] == requested
+    assert called == (['001'] if requested == 4 else [])
