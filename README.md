@@ -1,4 +1,4 @@
-# Python Lab v0.3
+# Python Lab
 
 Ambiente pessoal de prática deliberada em Python. O Lab não mede conteúdo consumido: ele registra competências demonstradas por meio de missões com planejamento, testes e explicação final.
 
@@ -40,7 +40,7 @@ lab
 
 Atalhos equivalentes: `python-lab` e `python lab.py` (a partir do repositório). `lab --classic` abre o prompt linha a linha da v0.2.
 
-A v0.3 é suportada a partir do checkout do repositório (inclusive pela instalação editável acima). O wheel ainda não é um artefato suportado, porque o catálogo de missões e seus dados vivem fora do pacote Python.
+A versão atual (`lab --version`) é suportada a partir do checkout do repositório (inclusive pela instalação editável acima). O wheel ainda não é um artefato suportado, porque o catálogo de missões e seus dados vivem fora do pacote Python.
 
 ## Ciclo de uma sessão
 
@@ -316,6 +316,13 @@ python3 -m venv .venv
 .venv/bin/python -m pytest -ra
 .venv/bin/lab --help
 .venv/bin/lab --version
+```
+
+Só com o extra `dev`, os testes que exigem extras opcionais são pulados (`-ra` lista os motivos). Para executá-los também, instale os extras de análise e do assistente sob as constraints, como o CI faz antes da suíte completa:
+
+```bash
+.venv/bin/python -m pip install -c constraints/dev.txt -c constraints/analysis.txt -e '.[analysis]'
+.venv/bin/python -m pip install -c constraints/dev.txt -c constraints/assistant.txt -e '.[assistant]'
 ```
 
 No Windows, use `.venv\Scripts\python.exe` e `.venv\Scripts\lab.exe`. `constraints/dev.txt` foi gerado no ambiente Linux Python 3.12, mantendo os limites declarados em `pyproject.toml`; as quatro células do workflow verificam instalação editável e suíte completa em Ubuntu/Windows com Python 3.11/3.12. Os testes incluem as 11 referências, jornadas reais 001/006, entrada/saída da TUI e cancelamento de árvores de processos. Ubuntu precisa de `cc` para a regressão nativa de threads. No Windows, o job também executa PowerShell e testa validação, falhas e idempotência do instalador, restaurando o PATH do usuário.
