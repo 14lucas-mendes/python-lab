@@ -1,5 +1,6 @@
 import asyncio
 from dataclasses import asdict, replace
+from importlib.metadata import PackageNotFoundError, version
 import json
 import threading
 from types import SimpleNamespace
@@ -279,6 +280,11 @@ def test_review_contracts_are_exported_from_public_modules():
 
 def test_review_without_provider_reports_real_local_ruff_finding(tmp_path):
     from python_lab.analysis import AnalysisService
+
+    try:
+        version("ruff")
+    except PackageNotFoundError:
+        pytest.skip("Optional analysis extra is absent")
 
     (tmp_path / 'a.py').write_text('import os\n')
     snapshot = Workspace(tmp_path).snapshot([tmp_path / 'a.py'])
